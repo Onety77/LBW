@@ -1,6 +1,5 @@
 require("dotenv").config();
 const { startAutoClaimFees } = require("./claimFees");
-const fetch = require("node-fetch");
 
 const {
   Connection, PublicKey, Transaction,
@@ -14,12 +13,13 @@ const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestor
 // ── CONFIG ──────────────────────────────────────────────────────────────────
 const CREATOR_WALLET  = process.env.CREATOR_WALLET;
 const TOKEN_CA        = process.env.TOKEN_CA;
-const ST_API_KEY      = process.env.SOLANATRACKER_API_KEY;
 const SOLANA_RPC      = process.env.SOLANA_RPC || "https://api.mainnet-beta.solana.com";
 const GAS_RESERVE_SOL = parseFloat(process.env.GAS_RESERVE_SOL || "0.005");
 const MIN_BUY_SOL     = parseFloat(process.env.MIN_BUY_SOL     || "0.1");
 const TIMER_MS        = parseInt(process.env.TIMER_MS          || "60000");
 const POLL_MS         = parseInt(process.env.POLL_MS           || "10000");
+
+const PUMP_PROGRAM_ID = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 
 // ── STARTUP CHECKS ──────────────────────────────────────────────────────────
 const missing = ["CREATOR_PRIVATE_KEY","FIREBASE_SERVICE_ACCOUNT_JSON","CREATOR_WALLET","TOKEN_CA"]
@@ -44,9 +44,8 @@ const log   = (m) => console.log("[" + new Date().toISOString() + "] " + m);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 let lastBuyerWallet = null;
-let lastBuyTime     = null;
 let winTimer        = null;
-let lastTradeSig    = null;
+let lastSig         = null; // last processed signature
 let isPayingOut     = false;
 
 async function withRetry(fn, retries, label) {
@@ -79,84 +78,95 @@ async function updateGlobal(fields) {
   catch (e) { log("  updateGlobal error: " + e.message); }
 }
 
-// ── FETCH RECENT TRADES ───────────────────────────────────────────────────────
-async function fetchRecentBuys() {
+// ── DERIVE BONDING CURVE ──────────────────────────────────────────────────────
+// pump.fun bonding curve PDA: seeds = ["bonding-curve", mint_pubkey]
+function deriveBondingCurve(mintPubkey) {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("bonding-curve"), mintPubkey.toBuffer()],
+    PUMP_PROGRAM_ID
+  );
+  return pda;
+}
+
+// ── DETECT BUYS VIA SOLANA RPC ────────────────────────────────────────────────
+// Gets recent transactions on the bonding curve and finds buy instructions
+async function detectRecentBuys(bondingCurve) {
   try {
-    await sleep(1000);
-    const res = await fetch(
-      "https://data.solanatracker.io/tokens/" + TOKEN_CA + "/trades?limit=10",
-      { headers: { "x-api-key": ST_API_KEY } }
-    );
+    // Get last 10 signatures for the bonding curve account
+    const sigs = await connection.getSignaturesForAddress(bondingCurve, { limit: 10 });
+    if (!sigs || sigs.length === 0) return [];
 
-    if (!res.ok) {
-      log("  [trades] HTTP " + res.status);
-      return [];
+    const newSigs = [];
+    for (const s of sigs) {
+      if (s.signature === lastSig) break;
+      newSigs.push(s.signature);
     }
 
-    const raw = await res.json();
+    if (newSigs.length === 0) return [];
 
-    // Log raw response once so we can see the structure
-    if (!fetchRecentBuys._logged) {
-      fetchRecentBuys._logged = true;
-      log("  [trades] RAW SAMPLE: " + JSON.stringify(raw).slice(0, 500));
+    log("  [rpc] " + newSigs.length + " new tx(s) on bonding curve");
+
+    const buys = [];
+
+    for (const sig of newSigs) {
+      try {
+        const tx = await connection.getParsedTransaction(sig, {
+          maxSupportedTransactionVersion: 0,
+          commitment: "confirmed",
+        });
+
+        if (!tx || !tx.meta) continue;
+
+        const accounts  = tx.transaction.message.accountKeys;
+        const preBalances  = tx.meta.preBalances;
+        const postBalances = tx.meta.postBalances;
+
+        // Check if this involves the pump.fun program
+        const involvesPump = accounts.some(a =>
+          (a.pubkey || a).toString() === PUMP_PROGRAM_ID.toString()
+        );
+        if (!involvesPump) continue;
+
+        // Find the buyer — the account whose SOL balance decreased the most
+        // (excluding the bonding curve itself and program accounts)
+        let maxDecrease = 0;
+        let buyerIndex  = -1;
+
+        for (let i = 0; i < preBalances.length; i++) {
+          const decrease = preBalances[i] - postBalances[i];
+          if (decrease > maxDecrease) {
+            maxDecrease = decrease;
+            buyerIndex  = i;
+          }
+        }
+
+        if (buyerIndex === -1 || maxDecrease <= 0) continue;
+
+        const solSpent = maxDecrease / LAMPORTS_PER_SOL;
+        const buyer    = (accounts[buyerIndex].pubkey || accounts[buyerIndex]).toString();
+
+        // Skip if buyer is the bonding curve or program itself
+        if (buyer === bondingCurve.toString() || buyer === PUMP_PROGRAM_ID.toString()) continue;
+        if (buyer === CREATOR_WALLET) continue;
+
+        log("  [rpc] tx: " + sig.slice(0,20) + "... buyer: " + buyer.slice(0,8) + "... ◎" + solSpent.toFixed(4));
+
+        buys.push({ sig, buyer, solSpent });
+
+      } catch (e) {
+        // Skip failed tx parse
+      }
     }
 
-    // Normalise — handle all possible response shapes
-    let list = [];
-    if (Array.isArray(raw))           list = raw;
-    else if (Array.isArray(raw.trades)) list = raw.trades;
-    else if (Array.isArray(raw.items))  list = raw.items;
-    else if (Array.isArray(raw.data))   list = raw.data;
+    // Update lastSig to most recent processed
+    if (newSigs.length > 0) lastSig = newSigs[0];
 
-    if (list.length === 0) return [];
-
-    // Filter buys only
-    return list.filter(t => {
-      const type = (t.type || t.side || t.action || "").toLowerCase();
-      return type === "buy" || type === "bought";
-    });
+    return buys;
 
   } catch (e) {
-    log("  [trades] Error: " + e.message);
+    log("  [rpc] Error: " + e.message);
     return [];
   }
-}
-fetchRecentBuys._logged = false;
-
-// ── EXTRACT SOL AMOUNT FROM TRADE ────────────────────────────────────────────
-function extractSOLAmount(trade) {
-  // Try every known field name SolanaTracker uses
-  if (trade.volume?.sol)       return trade.volume.sol;
-  if (trade.volumeSol)         return trade.volumeSol;
-  if (trade.sol)               return trade.sol;
-  if (trade.solAmount)         return trade.solAmount;
-  if (trade.amountSol)         return trade.amountSol;
-  if (trade.nativeAmount)      return trade.nativeAmount / LAMPORTS_PER_SOL;
-  if (trade.priceNative)       return trade.priceNative;
-
-  // amount field — check if it's SOL side
-  if (trade.amount && trade.tokenIn) {
-    const tin = (trade.tokenIn || "").toLowerCase();
-    if (tin.includes("sol") || tin === "so11111111111111111111111111111111111111112")
-      return trade.amount;
-  }
-
-  // USD fallback — rough conversion
-  const usd = trade.volume?.usd || trade.volumeUsd || trade.usdAmount || 0;
-  if (usd > 0) return usd / 150; // rough SOL price estimate
-
-  return 0;
-}
-
-// ── EXTRACT WALLET FROM TRADE ────────────────────────────────────────────────
-function extractWallet(trade) {
-  return trade.wallet
-      || trade.buyer
-      || trade.maker
-      || trade.user
-      || trade.signer
-      || trade.owner
-      || null;
 }
 
 // ── RESET TIMER ───────────────────────────────────────────────────────────────
@@ -169,18 +179,14 @@ function resetTimer() {
 }
 
 // ── UPDATE LEADER ─────────────────────────────────────────────────────────────
-async function updateLeader(wallet, solAmount, sig) {
-  log("  NEW LEADER: " + wallet + " | ◎" + solAmount.toFixed(4));
+async function updateLeader(wallet, solAmount) {
+  log("  ★ NEW LEADER: " + wallet + " | ◎" + solAmount.toFixed(4));
   lastBuyerWallet = wallet;
-  lastBuyTime     = Date.now();
-  lastTradeSig    = sig;
-
   await updateGlobal({
     lastBuyer:  wallet,
-    lastBuyAt:  Timestamp.fromMillis(lastBuyTime),
+    lastBuyAt:  Timestamp.now(),
     lastBuySOL: solAmount,
   });
-
   resetTimer();
 }
 
@@ -203,15 +209,14 @@ async function triggerPayout() {
     const sendLam    = balLam - gasLam;
     const sendSOLAmt = sendLam / LAMPORTS_PER_SOL;
 
-    log("Sending ◎" + sendSOLAmt.toFixed(6) + " to " + winner);
-
     if (sendLam <= 0) {
-      log("Pot empty — starting new round.");
+      log("Pot empty — new round.");
       await startNewRound();
       isPayingOut = false;
       return;
     }
 
+    log("Sending ◎" + sendSOLAmt.toFixed(6) + " to " + winner);
     const txSig = await sendSOL(winner, sendLam);
     log("TX: " + txSig);
 
@@ -252,9 +257,7 @@ async function triggerPayout() {
 async function startNewRound() {
   log("Starting new round...");
   lastBuyerWallet = null;
-  lastBuyTime     = null;
-  lastTradeSig    = null;
-  fetchRecentBuys._logged = false; // reset so we log next raw response
+  lastSig         = null;
 
   try {
     const balLam = await getBalanceLamports();
@@ -271,30 +274,24 @@ async function startNewRound() {
 
 // ── POLL LOOP ─────────────────────────────────────────────────────────────────
 async function pollTrades() {
+  const mintPubkey   = new PublicKey(TOKEN_CA);
+  const bondingCurve = deriveBondingCurve(mintPubkey);
+  log("Bonding curve: " + bondingCurve.toBase58());
+
   while (true) {
     try {
       // Update pot balance
       const balLam = await getBalanceLamports();
       await updateGlobal({ currentPotSOL: balLam / LAMPORTS_PER_SOL });
 
-      // Fetch recent buys
-      const buys = await fetchRecentBuys();
+      // Detect buys directly from Solana RPC
+      if (!isPayingOut) {
+        const buys = await detectRecentBuys(bondingCurve);
 
-      if (buys.length > 0) {
-        for (const trade of buys) {
-          const sig    = trade.signature || trade.txHash || trade.tx || trade.txId || null;
-          const wallet = extractWallet(trade);
-
-          // Skip already processed
-          if (sig && sig === lastTradeSig) break;
-
-          const solAmount = extractSOLAmount(trade);
-
-          log("  [poll] buy: " + (wallet||"?") + " ◎" + solAmount.toFixed(4) + " sig: " + (sig||"none").slice(0,20));
-
-          if (solAmount >= MIN_BUY_SOL && wallet && !isPayingOut) {
-            await updateLeader(wallet, solAmount, sig);
-            break;
+        for (const { sig, buyer, solSpent } of buys) {
+          if (solSpent >= MIN_BUY_SOL) {
+            await updateLeader(buyer, solSpent);
+            break; // one leader update per poll
           }
         }
       }
