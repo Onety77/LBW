@@ -4,7 +4,7 @@ import { db } from "../firebase";
 
 // ── CONFIG — fill before deploy ────────────────────────────────────────────
 const TOKEN_CA      = "A8xTARmK3XwytJ5WbKcBcFCAoEBPxK51jj4jrnGapump";
-const X_URL         = "https://x.com/REPLACE_HANDLE";
+const X_URL         = "https://x.com/REPLACE";
 const SITE_URL      = "https://lastbuyerwins.xyz";
 const TIMER_DEFAULT = 1 * 60 * 1000; // 10 minutes
 const MIN_BUY_SOL   = 0.1;
