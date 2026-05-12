@@ -93,7 +93,7 @@ function deriveBondingCurve(mintPubkey) {
 async function detectRecentBuys(bondingCurve) {
   try {
     // Get last 10 signatures for the bonding curve account
-    const sigs = await connection.getSignaturesForAddress(bondingCurve, { limit: 10 });
+    const sigs = await connection.getSignaturesForAddress(bondingCurve, { limit: 3 });
     if (!sigs || sigs.length === 0) return [];
 
     const newSigs = [];
