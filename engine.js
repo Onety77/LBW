@@ -17,7 +17,6 @@ const SOLANA_RPC      = process.env.SOLANA_RPC || "https://api.mainnet-beta.sola
 const GAS_RESERVE_SOL = parseFloat(process.env.GAS_RESERVE_SOL || "0.005");
 const MIN_BUY_SOL     = parseFloat(process.env.MIN_BUY_SOL     || "0.1");
 const TIMER_MS        = parseInt(process.env.TIMER_MS          || "60000");
-const POLL_MS         = parseInt(process.env.POLL_MS           || "10000");
 
 const PUMP_PROGRAM_ID = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 
@@ -27,7 +26,12 @@ const missing = ["CREATOR_PRIVATE_KEY","FIREBASE_SERVICE_ACCOUNT_JSON","CREATOR_
 if (missing.length) { console.error("Missing env:", missing.join(", ")); process.exit(1); }
 
 // ── SOLANA ──────────────────────────────────────────────────────────────────
-const connection = new Connection(SOLANA_RPC, "confirmed");
+// Use http for regular calls, ws for subscriptions
+const WS_RPC     = SOLANA_RPC.replace("https://","wss://").replace("http://","ws://");
+const connection = new Connection(SOLANA_RPC, {
+  commitment: "confirmed",
+  wsEndpoint: WS_RPC,
+});
 const creatorKP  = Keypair.fromSecretKey(bs58.decode(process.env.CREATOR_PRIVATE_KEY));
 
 if (creatorKP.publicKey.toBase58() !== CREATOR_WALLET) {
@@ -45,8 +49,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 let lastBuyerWallet = null;
 let winTimer        = null;
-let lastSig         = null; // last processed signature
 let isPayingOut     = false;
+let processedSigs   = new Set(); // avoid double processing
 
 async function withRetry(fn, retries, label) {
   for (let i = 0; i <= retries; i++) {
@@ -79,94 +83,12 @@ async function updateGlobal(fields) {
 }
 
 // ── DERIVE BONDING CURVE ──────────────────────────────────────────────────────
-// pump.fun bonding curve PDA: seeds = ["bonding-curve", mint_pubkey]
 function deriveBondingCurve(mintPubkey) {
   const [pda] = PublicKey.findProgramAddressSync(
     [Buffer.from("bonding-curve"), mintPubkey.toBuffer()],
     PUMP_PROGRAM_ID
   );
   return pda;
-}
-
-// ── DETECT BUYS VIA SOLANA RPC ────────────────────────────────────────────────
-// Gets recent transactions on the bonding curve and finds buy instructions
-async function detectRecentBuys(bondingCurve) {
-  try {
-    // Get last 10 signatures for the bonding curve account
-    const sigs = await connection.getSignaturesForAddress(bondingCurve, { limit: 3 });
-    if (!sigs || sigs.length === 0) return [];
-
-    const newSigs = [];
-    for (const s of sigs) {
-      if (s.signature === lastSig) break;
-      newSigs.push(s.signature);
-    }
-
-    if (newSigs.length === 0) return [];
-
-    log("  [rpc] " + newSigs.length + " new tx(s) on bonding curve");
-
-    const buys = [];
-
-    for (const sig of newSigs) {
-      try {
-        const tx = await connection.getParsedTransaction(sig, {
-          maxSupportedTransactionVersion: 0,
-          commitment: "confirmed",
-        });
-
-        if (!tx || !tx.meta) continue;
-
-        const accounts  = tx.transaction.message.accountKeys;
-        const preBalances  = tx.meta.preBalances;
-        const postBalances = tx.meta.postBalances;
-
-        // Check if this involves the pump.fun program
-        const involvesPump = accounts.some(a =>
-          (a.pubkey || a).toString() === PUMP_PROGRAM_ID.toString()
-        );
-        if (!involvesPump) continue;
-
-        // Find the buyer — the account whose SOL balance decreased the most
-        // (excluding the bonding curve itself and program accounts)
-        let maxDecrease = 0;
-        let buyerIndex  = -1;
-
-        for (let i = 0; i < preBalances.length; i++) {
-          const decrease = preBalances[i] - postBalances[i];
-          if (decrease > maxDecrease) {
-            maxDecrease = decrease;
-            buyerIndex  = i;
-          }
-        }
-
-        if (buyerIndex === -1 || maxDecrease <= 0) continue;
-
-        const solSpent = maxDecrease / LAMPORTS_PER_SOL;
-        const buyer    = (accounts[buyerIndex].pubkey || accounts[buyerIndex]).toString();
-
-        // Skip if buyer is the bonding curve or program itself
-        if (buyer === bondingCurve.toString() || buyer === PUMP_PROGRAM_ID.toString()) continue;
-        if (buyer === CREATOR_WALLET) continue;
-
-        log("  [rpc] tx: " + sig.slice(0,20) + "... buyer: " + buyer.slice(0,8) + "... ◎" + solSpent.toFixed(4));
-
-        buys.push({ sig, buyer, solSpent });
-
-      } catch (e) {
-        // Skip failed tx parse
-      }
-    }
-
-    // Update lastSig to most recent processed
-    if (newSigs.length > 0) lastSig = newSigs[0];
-
-    return buys;
-
-  } catch (e) {
-    log("  [rpc] Error: " + e.message);
-    return [];
-  }
 }
 
 // ── RESET TIMER ───────────────────────────────────────────────────────────────
@@ -257,7 +179,7 @@ async function triggerPayout() {
 async function startNewRound() {
   log("Starting new round...");
   lastBuyerWallet = null;
-  lastSig         = null;
+  processedSigs.clear();
 
   try {
     const balLam = await getBalanceLamports();
@@ -272,35 +194,102 @@ async function startNewRound() {
   resetTimer();
 }
 
-// ── POLL LOOP ─────────────────────────────────────────────────────────────────
-async function pollTrades() {
-  const mintPubkey   = new PublicKey(TOKEN_CA);
-  const bondingCurve = deriveBondingCurve(mintPubkey);
-  log("Bonding curve: " + bondingCurve.toBase58());
+// ── PROCESS A TRANSACTION LOG ─────────────────────────────────────────────────
+// Called by onLogs subscription — zero polling, zero rate limits
+async function processTxLog(sig, bondingCurveStr) {
+  if (processedSigs.has(sig)) return;
+  processedSigs.add(sig);
+  if (processedSigs.size > 500) {
+    // Trim old entries
+    const arr = Array.from(processedSigs);
+    processedSigs = new Set(arr.slice(arr.length - 200));
+  }
 
-  while (true) {
-    try {
-      // Update pot balance
-      const balLam = await getBalanceLamports();
-      await updateGlobal({ currentPotSOL: balLam / LAMPORTS_PER_SOL });
+  try {
+    await sleep(2000); // wait for tx to finalize
 
-      // Detect buys directly from Solana RPC
-      if (!isPayingOut) {
-        const buys = await detectRecentBuys(bondingCurve);
+    const tx = await connection.getTransaction(sig, {
+      maxSupportedTransactionVersion: 0,
+      commitment: "confirmed",
+    });
 
-        for (const { sig, buyer, solSpent } of buys) {
-          if (solSpent >= MIN_BUY_SOL) {
-            await updateLeader(buyer, solSpent);
-            break; // one leader update per poll
-          }
-        }
+    if (!tx || !tx.meta) return;
+
+    const accounts     = tx.transaction.message.staticAccountKeys || tx.transaction.message.accountKeys || [];
+    const preBalances  = tx.meta.preBalances  || [];
+    const postBalances = tx.meta.postBalances || [];
+
+    // Find buyer = account whose SOL decreased most (spent on the buy)
+    let maxDecrease = 0;
+    let buyerIndex  = -1;
+
+    for (let i = 0; i < preBalances.length; i++) {
+      const decrease = preBalances[i] - postBalances[i];
+      // Must be positive (spent SOL) and more than gas
+      if (decrease > maxDecrease && decrease > 5000) {
+        maxDecrease = decrease;
+        buyerIndex  = i;
       }
-
-    } catch (e) {
-      log("Poll error: " + e.message);
     }
 
-    await sleep(POLL_MS);
+    if (buyerIndex === -1) return;
+
+    const solSpent = maxDecrease / LAMPORTS_PER_SOL;
+    const buyer    = accounts[buyerIndex].toString();
+
+    // Skip bonding curve, program, creator wallet
+    if (buyer === bondingCurveStr) return;
+    if (buyer === PUMP_PROGRAM_ID.toString()) return;
+    if (buyer === CREATOR_WALLET) return;
+
+    log("  [tx] " + sig.slice(0,20) + "... buyer: " + buyer.slice(0,8) + "... ◎" + solSpent.toFixed(4));
+
+    if (solSpent >= MIN_BUY_SOL && !isPayingOut) {
+      await updateLeader(buyer, solSpent);
+    }
+
+  } catch (e) {
+    // Silent — tx might not be available yet
+  }
+}
+
+// ── SUBSCRIBE TO BONDING CURVE LOGS ──────────────────────────────────────────
+// Real-time websocket subscription — fires instantly on every transaction
+// No polling, no rate limits
+function subscribeToBondingCurve(bondingCurve) {
+  const bondingCurveStr = bondingCurve.toString();
+  log("Subscribing to bonding curve: " + bondingCurveStr);
+
+  connection.onLogs(
+    bondingCurve,
+    async ({ signature, err, logs }) => {
+      if (err) return; // skip failed txs
+
+      // Only process if it looks like a buy instruction
+      const isBuy = logs && logs.some(l =>
+        l.includes("Instruction: Buy") || l.includes("buy")
+      );
+
+      if (!isBuy) return;
+
+      log("  [ws] Buy detected: " + signature.slice(0,20) + "...");
+      await processTxLog(signature, bondingCurveStr);
+    },
+    "confirmed"
+  );
+
+  log("Websocket subscription active — waiting for buys...");
+}
+
+// ── BALANCE UPDATE LOOP ───────────────────────────────────────────────────────
+// Separate lightweight loop just to keep pot balance fresh on the site
+async function balanceUpdateLoop() {
+  while (true) {
+    try {
+      const balLam = await getBalanceLamports();
+      await updateGlobal({ currentPotSOL: balLam / LAMPORTS_PER_SOL });
+    } catch {}
+    await sleep(30000); // update balance every 30s — not expensive
   }
 }
 
@@ -311,7 +300,7 @@ console.log("  Token      : " + TOKEN_CA);
 log("Gas Reserve: ◎" + GAS_RESERVE_SOL);
 log("Min Buy    : ◎" + MIN_BUY_SOL + " SOL");
 log("Timer      : " + (TIMER_MS/60000) + " min");
-log("Poll Every : " + (POLL_MS/1000) + "s");
+log("Detection  : WebSocket (real-time, no polling)");
 log("────────────────────────────────────────────");
 
 // Init global doc
@@ -330,6 +319,10 @@ db.doc("lbw_stats/global").get().then(snap => {
   }
 }).catch(e => log("Init error: " + e.message));
 
+const mintPubkey   = new PublicKey(TOKEN_CA);
+const bondingCurve = deriveBondingCurve(mintPubkey);
+
 startAutoClaimFees(connection, creatorKP, log);
 startNewRound();
-pollTrades();
+subscribeToBondingCurve(bondingCurve);
+balanceUpdateLoop();
