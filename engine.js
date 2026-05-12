@@ -26,12 +26,8 @@ const missing = ["CREATOR_PRIVATE_KEY","FIREBASE_SERVICE_ACCOUNT_JSON","CREATOR_
 if (missing.length) { console.error("Missing env:", missing.join(", ")); process.exit(1); }
 
 // ── SOLANA ──────────────────────────────────────────────────────────────────
-// Use http for regular calls, ws for subscriptions
 const WS_RPC     = SOLANA_RPC.replace("https://","wss://").replace("http://","ws://");
-const connection = new Connection(SOLANA_RPC, {
-  commitment: "confirmed",
-  wsEndpoint: WS_RPC,
-});
+const connection = new Connection(SOLANA_RPC, { commitment:"confirmed", wsEndpoint:WS_RPC });
 const creatorKP  = Keypair.fromSecretKey(bs58.decode(process.env.CREATOR_PRIVATE_KEY));
 
 if (creatorKP.publicKey.toBase58() !== CREATOR_WALLET) {
@@ -50,7 +46,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let lastBuyerWallet = null;
 let winTimer        = null;
 let isPayingOut     = false;
-let processedSigs   = new Set(); // avoid double processing
+let processedSigs   = new Set();
 
 async function withRetry(fn, retries, label) {
   for (let i = 0; i <= retries; i++) {
@@ -72,17 +68,16 @@ async function sendSOL(to, lamports) {
     SystemProgram.transfer({ fromPubkey: creatorKP.publicKey, toPubkey: new PublicKey(to), lamports })
   );
   return withRetry(
-    () => sendAndConfirmTransaction(connection, tx, [creatorKP], { commitment: "confirmed" }),
+    () => sendAndConfirmTransaction(connection, tx, [creatorKP], { commitment:"confirmed" }),
     2, "sendSOL"
   );
 }
 
 async function updateGlobal(fields) {
-  try { await db.doc("lbw_stats/global").set(fields, { merge: true }); }
+  try { await db.doc("lbw_stats/global").set(fields, { merge:true }); }
   catch (e) { log("  updateGlobal error: " + e.message); }
 }
 
-// ── DERIVE BONDING CURVE ──────────────────────────────────────────────────────
 function deriveBondingCurve(mintPubkey) {
   const [pda] = PublicKey.findProgramAddressSync(
     [Buffer.from("bonding-curve"), mintPubkey.toBuffer()],
@@ -91,7 +86,6 @@ function deriveBondingCurve(mintPubkey) {
   return pda;
 }
 
-// ── RESET TIMER ───────────────────────────────────────────────────────────────
 function resetTimer() {
   if (winTimer) clearTimeout(winTimer);
   const nextWinAt = Date.now() + TIMER_MS;
@@ -100,19 +94,44 @@ function resetTimer() {
   log("  Timer reset — winner at " + new Date(nextWinAt).toISOString());
 }
 
-// ── UPDATE LEADER ─────────────────────────────────────────────────────────────
-async function updateLeader(wallet, solAmount) {
+async function updateLeader(wallet, solAmount, sig) {
   log("  ★ NEW LEADER: " + wallet + " | ◎" + solAmount.toFixed(4));
   lastBuyerWallet = wallet;
+
+  // Write to lbw_buys feed — frontend shows this live
+  try {
+    await db.collection("lbw_buys").add({
+      wallet:    wallet,
+      amount:    solAmount,
+      sig:       sig || null,
+      timestamp: Timestamp.now(),
+      isLeader:  true, // will be updated when next buy comes in
+    });
+
+    // Mark all previous buys as no longer leader
+    const prev = await db.collection("lbw_buys")
+      .where("isLeader","==",true)
+      .get();
+    const batch = db.batch();
+    prev.docs.forEach(d => {
+      if (d.data().wallet !== wallet) {
+        batch.update(d.ref, { isLeader: false });
+      }
+    });
+    await batch.commit();
+  } catch (e) {
+    log("  lbw_buys write error: " + e.message);
+  }
+
   await updateGlobal({
     lastBuyer:  wallet,
     lastBuyAt:  Timestamp.now(),
     lastBuySOL: solAmount,
   });
+
   resetTimer();
 }
 
-// ── PAYOUT ────────────────────────────────────────────────────────────────────
 async function triggerPayout() {
   if (isPayingOut) return;
   if (!lastBuyerWallet) {
@@ -161,7 +180,7 @@ async function triggerPayout() {
     if (gs.exists && sendSOLAmt > (gs.data().biggestWin || 0)) {
       statsUp.biggestWin = sendSOLAmt;
     }
-    await db.doc("lbw_stats/global").set(statsUp, { merge: true });
+    await db.doc("lbw_stats/global").set(statsUp, { merge:true });
 
     log("=== Payout complete ===");
     await startNewRound();
@@ -175,11 +194,18 @@ async function triggerPayout() {
   isPayingOut = false;
 }
 
-// ── START NEW ROUND ───────────────────────────────────────────────────────────
 async function startNewRound() {
   log("Starting new round...");
   lastBuyerWallet = null;
   processedSigs.clear();
+
+  // Clear the buys feed for new round
+  try {
+    const snap = await db.collection("lbw_buys").get();
+    const batch = db.batch();
+    snap.docs.forEach(d => batch.delete(d.ref));
+    await batch.commit();
+  } catch {}
 
   try {
     const balLam = await getBalanceLamports();
@@ -194,19 +220,16 @@ async function startNewRound() {
   resetTimer();
 }
 
-// ── PROCESS A TRANSACTION LOG ─────────────────────────────────────────────────
-// Called by onLogs subscription — zero polling, zero rate limits
 async function processTxLog(sig, bondingCurveStr) {
   if (processedSigs.has(sig)) return;
   processedSigs.add(sig);
   if (processedSigs.size > 500) {
-    // Trim old entries
     const arr = Array.from(processedSigs);
     processedSigs = new Set(arr.slice(arr.length - 200));
   }
 
   try {
-    await sleep(2000); // wait for tx to finalize
+    await sleep(2000);
 
     const tx = await connection.getTransaction(sig, {
       maxSupportedTransactionVersion: 0,
@@ -219,13 +242,11 @@ async function processTxLog(sig, bondingCurveStr) {
     const preBalances  = tx.meta.preBalances  || [];
     const postBalances = tx.meta.postBalances || [];
 
-    // Find buyer = account whose SOL decreased most (spent on the buy)
     let maxDecrease = 0;
     let buyerIndex  = -1;
 
     for (let i = 0; i < preBalances.length; i++) {
       const decrease = preBalances[i] - postBalances[i];
-      // Must be positive (spent SOL) and more than gas
       if (decrease > maxDecrease && decrease > 5000) {
         maxDecrease = decrease;
         buyerIndex  = i;
@@ -237,7 +258,6 @@ async function processTxLog(sig, bondingCurveStr) {
     const solSpent = maxDecrease / LAMPORTS_PER_SOL;
     const buyer    = accounts[buyerIndex].toString();
 
-    // Skip bonding curve, program, creator wallet
     if (buyer === bondingCurveStr) return;
     if (buyer === PUMP_PROGRAM_ID.toString()) return;
     if (buyer === CREATOR_WALLET) return;
@@ -245,17 +265,14 @@ async function processTxLog(sig, bondingCurveStr) {
     log("  [tx] " + sig.slice(0,20) + "... buyer: " + buyer.slice(0,8) + "... ◎" + solSpent.toFixed(4));
 
     if (solSpent >= MIN_BUY_SOL && !isPayingOut) {
-      await updateLeader(buyer, solSpent);
+      await updateLeader(buyer, solSpent, sig);
     }
 
   } catch (e) {
-    // Silent — tx might not be available yet
+    // silent
   }
 }
 
-// ── SUBSCRIBE TO BONDING CURVE LOGS ──────────────────────────────────────────
-// Real-time websocket subscription — fires instantly on every transaction
-// No polling, no rate limits
 function subscribeToBondingCurve(bondingCurve) {
   const bondingCurveStr = bondingCurve.toString();
   log("Subscribing to bonding curve: " + bondingCurveStr);
@@ -263,33 +280,27 @@ function subscribeToBondingCurve(bondingCurve) {
   connection.onLogs(
     bondingCurve,
     async ({ signature, err, logs }) => {
-      if (err) return; // skip failed txs
-
-      // Only process if it looks like a buy instruction
+      if (err) return;
       const isBuy = logs && logs.some(l =>
         l.includes("Instruction: Buy") || l.includes("buy")
       );
-
       if (!isBuy) return;
-
       log("  [ws] Buy detected: " + signature.slice(0,20) + "...");
       await processTxLog(signature, bondingCurveStr);
     },
     "confirmed"
   );
 
-  log("Websocket subscription active — waiting for buys...");
+  log("WebSocket active — watching for buys...");
 }
 
-// ── BALANCE UPDATE LOOP ───────────────────────────────────────────────────────
-// Separate lightweight loop just to keep pot balance fresh on the site
 async function balanceUpdateLoop() {
   while (true) {
     try {
       const balLam = await getBalanceLamports();
       await updateGlobal({ currentPotSOL: balLam / LAMPORTS_PER_SOL });
     } catch {}
-    await sleep(30000); // update balance every 30s — not expensive
+    await sleep(30000);
   }
 }
 
@@ -300,20 +311,15 @@ console.log("  Token      : " + TOKEN_CA);
 log("Gas Reserve: ◎" + GAS_RESERVE_SOL);
 log("Min Buy    : ◎" + MIN_BUY_SOL + " SOL");
 log("Timer      : " + (TIMER_MS/60000) + " min");
-log("Detection  : WebSocket (real-time, no polling)");
+log("Detection  : WebSocket real-time");
 log("────────────────────────────────────────────");
 
-// Init global doc
 db.doc("lbw_stats/global").get().then(snap => {
   if (!snap.exists) {
     db.doc("lbw_stats/global").set({
-      currentPotSOL: 0,
-      totalPaid:     0,
-      totalRounds:   0,
-      biggestWin:    0,
-      lastBuyer:     null,
-      lastBuyAt:     null,
-      nextWinAt:     Timestamp.fromMillis(Date.now() + TIMER_MS),
+      currentPotSOL: 0, totalPaid: 0, totalRounds: 0,
+      biggestWin: 0, lastBuyer: null, lastBuyAt: null,
+      nextWinAt: Timestamp.fromMillis(Date.now() + TIMER_MS),
     });
     log("Global stats initialized.");
   }
