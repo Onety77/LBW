@@ -1,0 +1,24 @@
+// Firebase Console → Firestore → Rules → Paste → Publish
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global stats — public read, engine writes via Admin SDK
+    match /lbw_stats/{doc} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    // Winners history — public read, engine writes via Admin SDK
+    match /lbw_history/{doc} {
+      allow read:  if true;
+      allow write: if false;
+    }
+
+    // Deny everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
