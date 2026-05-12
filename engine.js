@@ -324,7 +324,7 @@ log("─────────────────────────
 
 // Init global doc if doesn't exist
 db.doc("lbw_stats/global").get().then(snap => {
-  if (!snap.exists()) {
+  if (!snap.exists) {
     db.doc("lbw_stats/global").set({
       currentPotSOL: 0,
       totalPaid:     0,
