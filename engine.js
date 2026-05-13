@@ -98,25 +98,19 @@ async function updateLeader(wallet, solAmount, sig) {
   log("  ★ NEW LEADER: " + wallet + " | ◎" + solAmount.toFixed(4));
   lastBuyerWallet = wallet;
 
-  // Write to lbw_buys feed — frontend shows this live
   try {
     await db.collection("lbw_buys").add({
       wallet:    wallet,
       amount:    solAmount,
       sig:       sig || null,
       timestamp: Timestamp.now(),
-      isLeader:  true, // will be updated when next buy comes in
+      isLeader:  true,
     });
 
-    // Mark all previous buys as no longer leader
-    const prev = await db.collection("lbw_buys")
-      .where("isLeader","==",true)
-      .get();
+    const prev = await db.collection("lbw_buys").where("isLeader","==",true).get();
     const batch = db.batch();
     prev.docs.forEach(d => {
-      if (d.data().wallet !== wallet) {
-        batch.update(d.ref, { isLeader: false });
-      }
+      if (d.data().wallet !== wallet) batch.update(d.ref, { isLeader: false });
     });
     await batch.commit();
   } catch (e) {
@@ -199,7 +193,6 @@ async function startNewRound() {
   lastBuyerWallet = null;
   processedSigs.clear();
 
-  // Clear the buys feed for new round
   try {
     const snap = await db.collection("lbw_buys").get();
     const batch = db.batch();
@@ -242,6 +235,7 @@ async function processTxLog(sig, bondingCurveStr) {
     const preBalances  = tx.meta.preBalances  || [];
     const postBalances = tx.meta.postBalances || [];
 
+    // Find the account whose SOL decreased most — that's the buyer
     let maxDecrease = 0;
     let buyerIndex  = -1;
 
@@ -258,6 +252,7 @@ async function processTxLog(sig, bondingCurveStr) {
     const solSpent = maxDecrease / LAMPORTS_PER_SOL;
     const buyer    = accounts[buyerIndex].toString();
 
+    // Skip system accounts
     if (buyer === bondingCurveStr) return;
     if (buyer === PUMP_PROGRAM_ID.toString()) return;
     if (buyer === CREATOR_WALLET) return;
@@ -269,7 +264,7 @@ async function processTxLog(sig, bondingCurveStr) {
     }
 
   } catch (e) {
-    // silent
+    // silent — tx fetch failures are normal
   }
 }
 
@@ -281,11 +276,10 @@ function subscribeToBondingCurve(bondingCurve) {
     bondingCurve,
     async ({ signature, err, logs }) => {
       if (err) return;
-      const isBuy = logs && logs.some(l =>
-        l.includes("Instruction: Buy") || l.includes("buy")
-      );
-      if (!isBuy) return;
-      log("  [ws] Buy detected: " + signature.slice(0,20) + "...");
+
+      // Accept ALL transactions on the bonding curve
+      // processTxLog handles filtering — only buyers (SOL decreasing) qualify
+      log("  [ws] Transaction detected: " + signature.slice(0,20) + "...");
       await processTxLog(signature, bondingCurveStr);
     },
     "confirmed"
