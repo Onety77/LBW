@@ -52,7 +52,9 @@ let lastBuyerWallet  = null;
 let winTimer         = null;
 let isPayingOut      = false;
 let processedSigs    = new Set();
-let currentWatchAddr = null; // the account we are currently subscribed to
+let currentWatchAddr = null;
+let lastLeaderUpdate = 0;     // timestamp of last leader update
+const LEADER_COOLDOWN = 3000; // minimum 3s between leader updates // the account we are currently subscribed to
 let wsSubId          = null; // subscription id so we can unsub if needed
 
 // ── DERIVE PDAs ───────────────────────────────────────────────────────────────
@@ -85,7 +87,11 @@ async function withRetry(fn, retries, label) {
     try { return await fn(); }
     catch (e) {
       if (i === retries) throw e;
-      await sleep(2000 * (i+1));
+      // 429 rate limit — back off longer
+      const is429 = e.message && (e.message.includes("429") || e.message.includes("Too Many"));
+      const delay = is429 ? 5000 * (i + 1) : 2000 * (i + 1);
+      log("  Retry " + (i+1) + "/" + retries + " for " + (label||"") + " in " + (delay/1000) + "s");
+      await sleep(delay);
     }
   }
 }
@@ -120,6 +126,14 @@ function resetTimer() {
 
 // ── UPDATE LEADER ─────────────────────────────────────────────────────────────
 async function updateLeader(wallet, solAmount, sig) {
+  // Cooldown — don't update leader more than once every 3 seconds
+  const now = Date.now();
+  if (now - lastLeaderUpdate < LEADER_COOLDOWN) {
+    log("  [cooldown] skipping — too soon since last update");
+    return;
+  }
+  lastLeaderUpdate = now;
+
   log("  ★ NEW LEADER: " + wallet + " | ◎" + solAmount.toFixed(4));
   lastBuyerWallet = wallet;
 
