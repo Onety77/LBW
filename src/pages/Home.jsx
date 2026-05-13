@@ -2,31 +2,40 @@ import { useState, useEffect, useRef } from "react";
 import { doc, onSnapshot, collection, query, orderBy, limit } from "firebase/firestore";
 import { db } from "../firebase";
 
-// ── CONFIG ───────────────────────────────────────────────────────────────────
+// ── CONFIG ────────────────────────────────────────────────────────────────────
 const TOKEN_CA      = "PASTE_TOKEN_CA_HERE";
 const X_URL         = "https://x.com/REPLACE_HANDLE";
-const SITE_URL      = "https://lastbuyerwins.xyz";
 const TIMER_DEFAULT = 60 * 1000;
 const MIN_BUY_SOL   = 0.1;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const short   = (a) => a ? a.slice(0,4)+"..."+a.slice(-4) : "—";
 const fmtSOL  = (n) => (!n && n !== 0) ? "0.0000" : n.toFixed(4);
-const timeAgo = (ms) => {
-  const s = Math.floor((Date.now()-ms)/1000);
-  if (s < 5)   return "just now";
-  if (s < 60)  return s+"s ago";
-  if (s < 3600) return Math.floor(s/60)+"m ago";
-  return Math.floor(s/3600)+"h ago";
-};
 const fmtTime = (ms) => {
   if (ms <= 0) return "00:00";
   const t = Math.floor(ms/1000);
   return String(Math.floor(t/60)).padStart(2,"0")+":"+String(t%60).padStart(2,"0");
 };
+const timeAgo = (ms) => {
+  const s = Math.floor((Date.now()-ms)/1000);
+  if (s < 5)    return "just now";
+  if (s < 60)   return s+"s ago";
+  if (s < 3600) return Math.floor(s/60)+"m ago";
+  return Math.floor(s/3600)+"h ago";
+};
+
+function useWindowWidth() {
+  const [w, setW] = useState(window.innerWidth);
+  useEffect(()=>{
+    const h=()=>setW(window.innerWidth);
+    window.addEventListener("resize",h);
+    return ()=>window.removeEventListener("resize",h);
+  },[]);
+  return w;
+}
 
 // ── Ticker ────────────────────────────────────────────────────────────────────
-function TickerBar({ stats }) {
+function TickerBar({stats}) {
   const items = [
     "LAST BUYER WINS",
     "MIN BUY: ◎"+MIN_BUY_SOL,
@@ -40,11 +49,11 @@ function TickerBar({ stats }) {
     "ROUNDS WON: "+(stats?.totalRounds||0),
   ];
   return (
-    <div style={{ borderTop:"1px solid var(--border)", borderBottom:"1px solid var(--border)", overflow:"hidden", padding:"10px 0", background:"var(--bg2)" }}>
-      <div style={{ display:"flex", gap:48, animation:"ticker-left 20s linear infinite", whiteSpace:"nowrap", width:"max-content" }}>
-        {items.map((item,i) => (
-          <span key={i} style={{ fontFamily:"'Space Mono',monospace", fontSize:11, color:"var(--grey)", letterSpacing:2 }}>
-            <span style={{ color:"var(--red)", marginRight:16 }}>▶</span>{item}
+    <div style={{borderTop:"1px solid var(--border)",borderBottom:"1px solid var(--border)",overflow:"hidden",padding:"8px 0",background:"var(--bg2)"}}>
+      <div style={{display:"flex",gap:40,animation:"ticker-left 20s linear infinite",whiteSpace:"nowrap",width:"max-content"}}>
+        {items.map((item,i)=>(
+          <span key={i} style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"var(--grey)",letterSpacing:2}}>
+            <span style={{color:"var(--red)",marginRight:14}}>▶</span>{item}
           </span>
         ))}
       </div>
@@ -53,139 +62,42 @@ function TickerBar({ stats }) {
 }
 
 // ── Live buys feed ─────────────────────────────────────────────────────────────
-function BuyFeed({ buys }) {
-  const prevCount = useRef(0);
-
+function BuyFeed({buys}) {
   if (!buys || buys.length === 0) {
     return (
-      <div style={{
-        border:"1px solid var(--border)",
-        borderRadius:4,
-        background:"var(--bg2)",
-        padding:"24px",
-        textAlign:"center",
-      }}>
-        <div style={{ fontFamily:"'Space Mono',monospace", fontSize:11, color:"var(--greyDim)", letterSpacing:3 }}>
-          WAITING FOR FIRST BUY...
-        </div>
-        <div style={{ fontFamily:"'Space Mono',monospace", fontSize:10, color:"var(--greyDim)", marginTop:8, opacity:0.5 }}>
-          min ◎{MIN_BUY_SOL} SOL to appear here
-        </div>
+      <div style={{border:"1px solid var(--border)",borderRadius:4,background:"var(--bg2)",padding:"20px",textAlign:"center"}}>
+        <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"var(--greyDim)",letterSpacing:3}}>WAITING FOR FIRST BUY...</div>
+        <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:"var(--greyDim)",marginTop:6,opacity:0.5}}>min ◎{MIN_BUY_SOL} SOL to appear</div>
       </div>
     );
   }
-
-  const isNew = buys.length > prevCount.current;
-  prevCount.current = buys.length;
-
   return (
-    <div style={{
-      border:"1px solid var(--border)",
-      borderRadius:4,
-      overflow:"hidden",
-      background:"var(--bg2)",
-    }}>
-      {/* Feed header */}
-      <div style={{
-        padding:"10px 16px",
-        borderBottom:"1px solid var(--border)",
-        display:"flex", alignItems:"center", gap:10,
-        background:"var(--bg3)",
-      }}>
-        <div style={{
-          width:7, height:7, borderRadius:"50%",
-          background:"var(--red)",
-          boxShadow:"0 0 8px rgba(255,32,32,0.8)",
-          animation:"blink 1s ease infinite",
-        }}/>
-        <span style={{ fontFamily:"'Space Mono',monospace", fontSize:10, letterSpacing:3, color:"var(--grey)" }}>
-          LIVE BUYS
-        </span>
-        <span style={{ fontFamily:"'Space Mono',monospace", fontSize:10, color:"var(--greyDim)", marginLeft:"auto" }}>
-          {buys.length} buyer{buys.length !== 1 ? "s" : ""} this round
-        </span>
+    <div style={{border:"1px solid var(--border)",borderRadius:4,overflow:"hidden",background:"var(--bg2)"}}>
+      <div style={{padding:"8px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:8,background:"var(--bg3)"}}>
+        <div style={{width:6,height:6,borderRadius:"50%",background:"var(--red)",boxShadow:"0 0 8px rgba(255,32,32,0.8)",animation:"blink 1s ease infinite",flexShrink:0}}/>
+        <span style={{fontFamily:"'Space Mono',monospace",fontSize:9,letterSpacing:3,color:"var(--grey)"}}>LIVE BUYS</span>
+        <span style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:"var(--greyDim)",marginLeft:"auto"}}>{buys.length} this round</span>
       </div>
-
-      {/* Feed entries */}
-      <div style={{ maxHeight:320, overflowY:"auto" }}>
-        {buys.map((buy, i) => {
+      <div style={{maxHeight:280,overflowY:"auto"}}>
+        {buys.map((buy,i)=>{
           const isLeader = buy.isLeader;
-          const isFirst  = i === 0;
           return (
-            <div key={buy.id} style={{
-              display:"flex", alignItems:"center",
-              justifyContent:"space-between",
-              padding:"12px 16px",
-              borderBottom: i < buys.length-1 ? "1px solid rgba(255,255,255,0.04)" : "none",
-              background: isLeader
-                ? "rgba(255,32,32,0.06)"
-                : i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.01)",
-              animation: isFirst && isNew ? "slide-up 0.3s ease" : "none",
-              transition:"background 0.3s",
-              gap:12,
-            }}>
-              {/* Position + leader badge */}
-              <div style={{ display:"flex", alignItems:"center", gap:10, flexShrink:0 }}>
-                <div style={{
-                  width:24, height:24, borderRadius:"50%",
-                  display:"flex", alignItems:"center", justifyContent:"center",
-                  background: isLeader ? "var(--red)" : "var(--greyDim)",
-                  fontFamily:"'Space Mono',monospace",
-                  fontSize:10, fontWeight:700,
-                  color: isLeader ? "#fff" : "var(--grey)",
-                  flexShrink:0,
-                  boxShadow: isLeader ? "0 0 12px rgba(255,32,32,0.5)" : "none",
-                }}>
-                  {isLeader ? "★" : i+1}
-                </div>
+            <div key={buy.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderBottom:i<buys.length-1?"1px solid rgba(255,255,255,0.04)":"none",background:isLeader?"rgba(255,32,32,0.06)":"transparent",animation:i===0?"slide-up 0.3s ease":"none"}}>
+              <div style={{width:22,height:22,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:isLeader?"var(--red)":"var(--greyDim)",fontFamily:"'Space Mono',monospace",fontSize:9,fontWeight:700,color:isLeader?"#fff":"var(--grey)",flexShrink:0,boxShadow:isLeader?"0 0 10px rgba(255,32,32,0.5)":"none"}}>
+                {isLeader?"★":i+1}
               </div>
-
-              {/* Wallet */}
-              <div style={{ flex:1, minWidth:0 }}>
-                <div style={{
-                  fontFamily:"'Space Mono',monospace",
-                  fontSize: isLeader ? 14 : 12,
-                  color: isLeader ? "var(--red)" : "var(--grey)",
-                  fontWeight: isLeader ? 700 : 400,
-                  overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap",
-                }}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontFamily:"'Space Mono',monospace",fontSize:isLeader?13:11,color:isLeader?"var(--red)":"var(--grey)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:isLeader?700:400}}>
                   {short(buy.wallet)}
                 </div>
-                {isLeader && (
-                  <div style={{
-                    fontFamily:"'Inter',sans-serif",
-                    fontSize:9, letterSpacing:3,
-                    color:"var(--red)", marginTop:2,
-                    opacity:0.8,
-                  }}>CURRENT LEADER</div>
-                )}
+                {isLeader&&<div style={{fontFamily:"'Inter',sans-serif",fontSize:8,letterSpacing:3,color:"var(--red)",marginTop:2,opacity:0.8}}>CURRENT LEADER</div>}
               </div>
-
-              {/* Amount + time */}
-              <div style={{ textAlign:"right", flexShrink:0 }}>
-                <div style={{
-                  fontFamily:"'Space Mono',monospace",
-                  fontSize:13,
-                  color: isLeader ? "var(--red)" : "var(--white)",
-                  fontWeight: isLeader ? 700 : 400,
-                }}>
-                  ◎ {fmtSOL(buy.amount)}
-                </div>
-                <div style={{
-                  fontFamily:"'Inter',sans-serif",
-                  fontSize:10, color:"var(--greyDim)", marginTop:2,
-                }}>
-                  {buy.timestamp ? timeAgo(buy.timestamp.toMillis()) : ""}
-                </div>
+              <div style={{textAlign:"right",flexShrink:0}}>
+                <div style={{fontFamily:"'Space Mono',monospace",fontSize:12,color:isLeader?"var(--red)":"var(--white)",fontWeight:isLeader?700:400}}>◎ {fmtSOL(buy.amount)}</div>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,color:"var(--greyDim)",marginTop:2}}>{buy.timestamp?timeAgo(buy.timestamp.toMillis()):""}</div>
               </div>
-
-              {/* Solscan link */}
-              {buy.sig && (
-                <a href={"https://solscan.io/tx/"+buy.sig} target="_blank" rel="noreferrer"
-                  style={{ fontFamily:"'Inter',sans-serif", fontSize:9, color:"var(--greyDim)", textDecoration:"none", flexShrink:0 }}
-                  onMouseEnter={e=>e.currentTarget.style.color="var(--grey)"}
-                  onMouseLeave={e=>e.currentTarget.style.color="var(--greyDim)"}
-                >↗</a>
+              {buy.sig&&(
+                <a href={"https://solscan.io/tx/"+buy.sig} target="_blank" rel="noreferrer" style={{fontFamily:"'Inter',sans-serif",fontSize:9,color:"var(--greyDim)",textDecoration:"none",flexShrink:0}}>↗</a>
               )}
             </div>
           );
@@ -195,8 +107,10 @@ function BuyFeed({ buys }) {
   );
 }
 
-// ── Main Home ─────────────────────────────────────────────────────────────────
-export default function Home({ navigate }) {
+export default function Home({navigate}) {
+  const width    = useWindowWidth();
+  const isMobile = width < 768;
+
   const [stats,    setStats]    = useState(null);
   const [winners,  setWinners]  = useState([]);
   const [buys,     setBuys]     = useState([]);
@@ -206,9 +120,8 @@ export default function Home({ navigate }) {
   const winAtRef = useRef(null);
   const isLive   = TOKEN_CA !== "PASTE_TOKEN_CA_HERE";
 
-  // Global stats
   useEffect(()=>{
-    return onSnapshot(doc(db,"lbw_stats","global"), snap=>{
+    return onSnapshot(doc(db,"lbw_stats","global"),snap=>{
       if (!snap.exists()) return;
       const d = snap.data();
       setStats(d);
@@ -219,19 +132,16 @@ export default function Home({ navigate }) {
     });
   },[]);
 
-  // Recent winners
   useEffect(()=>{
-    const q = query(collection(db,"lbw_history"), orderBy("timestamp","desc"), limit(5));
-    return onSnapshot(q, snap=>setWinners(snap.docs.map(d=>({id:d.id,...d.data()}))));
+    const q = query(collection(db,"lbw_history"),orderBy("timestamp","desc"),limit(5));
+    return onSnapshot(q,snap=>setWinners(snap.docs.map(d=>({id:d.id,...d.data()}))));
   },[]);
 
-  // Live buys feed
   useEffect(()=>{
-    const q = query(collection(db,"lbw_buys"), orderBy("timestamp","desc"), limit(15));
-    return onSnapshot(q, snap=>setBuys(snap.docs.map(d=>({id:d.id,...d.data()}))));
+    const q = query(collection(db,"lbw_buys"),orderBy("timestamp","desc"),limit(15));
+    return onSnapshot(q,snap=>setBuys(snap.docs.map(d=>({id:d.id,...d.data()}))));
   },[]);
 
-  // Countdown tick
   useEffect(()=>{
     const id = setInterval(()=>{
       if (winAtRef.current) {
@@ -242,7 +152,7 @@ export default function Home({ navigate }) {
     return ()=>clearInterval(id);
   },[]);
 
-  const copyCA = ()=>{
+  const copyCA=()=>{
     if (!isLive) return;
     navigator.clipboard.writeText(TOKEN_CA);
     setCopiedCA(true);
@@ -250,43 +160,46 @@ export default function Home({ navigate }) {
   };
 
   const urgent      = countdown < 30000 && countdown > 0;
+  const isWaiting   = countdown === 0;
+  const lastBuyer   = stats?.lastBuyer;
   const currentPot  = stats?.currentPotSOL ?? null;
   const totalPaid   = stats?.totalPaid     ?? 0;
   const totalRounds = stats?.totalRounds   ?? 0;
   const biggestWin  = stats?.biggestWin    ?? 0;
-  const lastBuyer   = stats?.lastBuyer;
 
   return (
     <div className="page" style={{minHeight:"100vh",display:"flex",flexDirection:"column"}}>
 
       {/* ── HEADER ── */}
-      <header style={{ display:"flex",alignItems:"center",justifyContent:"space-between", padding:"16px 28px", borderBottom:"1px solid var(--border)", background:"var(--bg)", position:"fixed",top:0,left:0,right:0,zIndex:100 }}>
-        <div style={{display:"flex",alignItems:"center",gap:14}}>
-          <img src="/logo.png" alt="LBW" style={{width:32,height:32,borderRadius:4,objectFit:"cover"}}/>
+      <header style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:isMobile?"12px 16px":"16px 28px",borderBottom:"1px solid var(--border)",background:"var(--bg)",position:"fixed",top:0,left:0,right:0,zIndex:100}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <img src="/logo.png" alt="LBW" style={{width:30,height:30,borderRadius:4,objectFit:"cover"}}/>
           <div>
-            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:20,letterSpacing:"0.1em",color:"var(--white)"}}>LAST BUYER WINS</div>
-            <div style={{fontFamily:"'Space Mono',monospace",fontSize:8,color:"var(--grey)",letterSpacing:3,marginTop:-2}}>ON SOLANA</div>
+            <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:isMobile?16:20,letterSpacing:"0.1em",color:"var(--white)"}}>LAST BUYER WINS</div>
+            {!isMobile&&<div style={{fontFamily:"'Space Mono',monospace",fontSize:8,color:"var(--grey)",letterSpacing:3,marginTop:-2}}>ON SOLANA</div>}
           </div>
         </div>
-        <nav style={{display:"flex",alignItems:"center",gap:32}} className="hide-mobile">
+
+        <nav style={{display:"flex",alignItems:"center",gap:24}} className="hide-mobile">
           {[["HOME",()=>navigate("home")],["HISTORY",()=>navigate("history")]].map(([label,fn])=>(
             <button key={label} onClick={fn} style={{background:"none",border:"none",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:12,fontWeight:600,letterSpacing:3,color:"var(--grey)",transition:"color 0.2s"}}
               onMouseEnter={e=>e.currentTarget.style.color="var(--white)"}
               onMouseLeave={e=>e.currentTarget.style.color="var(--grey)"}
             >{label}</button>
           ))}
-          <a href={X_URL} target="_blank" rel="noreferrer" style={{fontFamily:"'Inter',sans-serif",fontSize:12,fontWeight:600,letterSpacing:3,color:"var(--grey)",textDecoration:"none",transition:"color 0.2s"}}
+          <a href={X_URL} target="_blank" rel="noreferrer" style={{fontFamily:"'Inter',sans-serif",fontSize:12,fontWeight:600,letterSpacing:3,color:"var(--grey)",textDecoration:"none"}}
             onMouseEnter={e=>e.currentTarget.style.color="var(--white)"}
             onMouseLeave={e=>e.currentTarget.style.color="var(--grey)"}
           >𝕏</a>
         </nav>
-        <button onClick={()=>setMenuOpen(o=>!o)} className="hide-desktop" style={{background:"none",border:"1px solid var(--border)",borderRadius:4,cursor:"pointer",color:"var(--grey)",padding:"6px 12px",fontSize:16,lineHeight:1}}>
+
+        <button onClick={()=>setMenuOpen(o=>!o)} className="hide-desktop" style={{background:"none",border:"1px solid var(--border)",borderRadius:4,cursor:"pointer",color:"var(--grey)",padding:"6px 10px",fontSize:14,lineHeight:1}}>
           {menuOpen?"✕":"☰"}
         </button>
       </header>
 
-      {menuOpen && (
-        <div style={{position:"fixed",top:65,left:0,right:0,background:"var(--bg2)",borderBottom:"1px solid var(--border)",zIndex:99,padding:"12px 28px 20px"}}>
+      {menuOpen&&(
+        <div style={{position:"fixed",top:55,left:0,right:0,background:"var(--bg2)",borderBottom:"1px solid var(--border)",zIndex:99,padding:"12px 16px 20px"}}>
           {[["HOME",()=>{navigate("home");setMenuOpen(false);}],["HISTORY",()=>{navigate("history");setMenuOpen(false);}]].map(([label,fn])=>(
             <button key={label} onClick={fn} style={{display:"block",width:"100%",background:"none",border:"none",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:15,fontWeight:600,letterSpacing:3,color:"var(--grey)",textAlign:"left",padding:"12px 0",borderBottom:"1px solid var(--border)"}}>
               {label}
@@ -297,140 +210,110 @@ export default function Home({ navigate }) {
       )}
 
       {/* Ticker */}
-      <div style={{marginTop:65}}>
+      <div style={{marginTop:isMobile?55:65}}>
         <TickerBar stats={stats}/>
       </div>
 
-      {/* ── MAIN CONTENT ── */}
-      <div style={{flex:1,maxWidth:"var(--max-w)",margin:"0 auto",width:"100%",padding:"40px 24px 80px"}}>
+      {/* ── HERO ── */}
+      <section style={{padding:isMobile?"32px 16px 40px":"60px 24px",display:"flex",flexDirection:"column",alignItems:"center",textAlign:"center",position:"relative",overflow:"hidden"}}>
+        <div style={{position:"absolute",width:isMobile?300:600,height:isMobile?300:600,borderRadius:"50%",background:"radial-gradient(circle, rgba(255,32,32,0.06) 0%, transparent 70%)",pointerEvents:"none",animation:urgent?"pulse-red 1s ease-in-out infinite":"none"}}/>
 
-        {/* Two column layout — countdown left, feed right */}
-        <div style={{
-          display:"grid",
-          gridTemplateColumns:"1fr 360px",
-          gap:32,
-          alignItems:"start",
-        }} className="stack-mobile">
+        {/* Status */}
+        <div style={{fontFamily:"'Space Mono',monospace",fontSize:isMobile?9:11,letterSpacing:4,color:urgent?"var(--red)":"var(--grey)",marginBottom:isMobile?16:24,animation:urgent?"blink 1s ease infinite":"none"}}>
+          {isWaiting?"⏳ PROCESSING...":urgent?"⚠ FINAL COUNTDOWN":"● LIVE"}
+        </div>
 
-          {/* ── LEFT: Countdown + stats ── */}
+        {/* Countdown */}
+        <div style={{fontFamily:"'Space Mono',monospace",fontSize:isMobile?"clamp(64px,20vw,96px)":"clamp(80px,14vw,160px)",fontWeight:700,lineHeight:1,color:urgent?"var(--red)":"var(--white)",letterSpacing:"-0.02em",animation:urgent?"urgent-shake 0.5s ease infinite":"none",textShadow:urgent?"0 0 40px rgba(255,32,32,0.6)":"none",marginBottom:8,position:"relative",zIndex:1}}>
+          {fmtTime(countdown)}
+        </div>
+
+        <div style={{fontFamily:"'Inter',sans-serif",fontSize:isMobile?10:12,fontWeight:600,letterSpacing:isMobile?4:6,color:"var(--grey)",marginBottom:isMobile?24:40}}>
+          {isWaiting?"DETERMINING WINNER...":"UNTIL NEXT WINNER"}
+        </div>
+
+        {/* Pot box */}
+        <div style={{textAlign:"center",marginBottom:isMobile?24:40,padding:isMobile?"16px 24px":"20px 48px",border:"1px solid "+(urgent?"var(--red)":"var(--border)"),borderRadius:4,background:urgent?"rgba(255,32,32,0.05)":"var(--card)",transition:"all 0.3s",animation:urgent?"pulse-red 1.5s ease-in-out infinite":"none",width:isMobile?"100%":"auto",maxWidth:isMobile?"none":400}}>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,fontWeight:700,letterSpacing:4,color:"var(--grey)",marginBottom:8}}>CURRENT POT</div>
+          <div style={{fontFamily:"'Space Mono',monospace",fontSize:isMobile?"clamp(24px,8vw,36px)":"clamp(28px,5vw,48px)",fontWeight:700,color:"var(--white)"}}>
+            ◎ {fmtSOL(currentPot)}
+          </div>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:11,color:"var(--grey)",marginTop:6}}>goes to the last qualifying buyer</div>
+        </div>
+
+        {/* CTA */}
+        <div style={{display:"flex",flexDirection:isMobile?"column":"row",gap:10,width:isMobile?"100%":"auto",maxWidth:isMobile?360:"none",justifyContent:"center"}}>
+          <a href={"https://pump.fun/coin/"+TOKEN_CA} target="_blank" rel="noreferrer" style={{width:isMobile?"100%":"auto"}}>
+            <button className="btn-red" style={{fontSize:14,padding:"14px 32px",width:isMobile?"100%":"auto"}}>BUY NOW ↗</button>
+          </a>
+          <button onClick={()=>navigate("history")} className="btn-outline" style={{width:isMobile?"100%":"auto"}}>WINNERS HISTORY</button>
+        </div>
+
+        <div style={{marginTop:16,fontFamily:"'Space Mono',monospace",fontSize:10,color:"var(--greyDim)",letterSpacing:1}}>
+          min ◎{MIN_BUY_SOL} SOL to qualify as last buyer
+        </div>
+      </section>
+
+      {/* ── LIVE SECTION — two col on desktop, stacked on mobile ── */}
+      <section style={{padding:isMobile?"0 16px 48px":"0 24px 80px",maxWidth:"var(--max-w)",margin:"0 auto",width:"100%"}}>
+        <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"1fr 340px",gap:isMobile?20:28,alignItems:"start"}}>
+
+          {/* LEFT: stats + leader */}
           <div>
-            {/* Status */}
-            <div style={{
-              fontFamily:"'Space Mono',monospace",
-              fontSize:11,letterSpacing:4,
-              color: urgent ? "var(--red)" : "var(--grey)",
-              marginBottom:16,
-              animation: urgent ? "blink 1s ease infinite" : "none",
-            }}>
-              {countdown===0 ? "⏳ PROCESSING..." : urgent ? "⚠ FINAL COUNTDOWN" : "● LIVE"}
-            </div>
-
-            {/* Big countdown */}
-            <div style={{
-              fontFamily:"'Space Mono',monospace",
-              fontSize:"clamp(64px,14vw,140px)",
-              fontWeight:700,
-              lineHeight:1,
-              color: urgent ? "var(--red)" : "var(--white)",
-              letterSpacing:"-0.02em",
-              marginBottom:8,
-              transition:"color 0.3s",
-              animation: urgent ? "urgent-shake 0.5s ease infinite" : "none",
-              textShadow: urgent ? "0 0 40px rgba(255,32,32,0.6)" : "none",
-              position:"relative",
-            }}>
-              {fmtTime(countdown)}
-              {/* Background glow */}
-              {urgent && (
-                <div style={{
-                  position:"absolute", inset:-40,
-                  background:"radial-gradient(circle, rgba(255,32,32,0.08) 0%, transparent 70%)",
-                  pointerEvents:"none",
-                  animation:"pulse-red 1s ease-in-out infinite",
-                }}/>
-              )}
-            </div>
-
-            <div style={{
-              fontFamily:"'Inter',sans-serif",
-              fontSize:11,fontWeight:600,letterSpacing:6,
-              color:"var(--grey)", marginBottom:40,
-            }}>
-              UNTIL NEXT WINNER
-            </div>
-
-            {/* Pot */}
-            <div style={{
-              padding:"20px 28px",
-              border:"1px solid "+(urgent?"var(--red)":"var(--border)"),
-              borderRadius:4,
-              background: urgent ? "rgba(255,32,32,0.04)" : "var(--card)",
-              marginBottom:24,
-              transition:"all 0.3s",
-            }}>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,fontWeight:700,letterSpacing:4,color:"var(--grey)",marginBottom:8}}>CURRENT POT</div>
-              <div style={{fontFamily:"'Space Mono',monospace",fontSize:"clamp(24px,5vw,40px)",fontWeight:700,color:"var(--white)"}}>
-                ◎ {fmtSOL(currentPot)}
-              </div>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:11,color:"var(--greyDim)",marginTop:6}}>goes to the last qualifying buyer</div>
-            </div>
-
-            {/* CTA */}
-            <div style={{display:"flex",gap:12,flexWrap:"wrap",marginBottom:32}}>
-              <a href={"https://pump.fun/coin/"+TOKEN_CA} target="_blank" rel="noreferrer">
-                <button className="btn-red" style={{fontSize:14,padding:"14px 32px"}}>BUY NOW ↗</button>
-              </a>
-              <button onClick={()=>navigate("history")} className="btn-outline">WINNERS</button>
-            </div>
-
-            <div style={{fontFamily:"'Space Mono',monospace",fontSize:11,color:"var(--greyDim)",letterSpacing:1,marginBottom:40}}>
-              min ◎{MIN_BUY_SOL} SOL to qualify as last buyer
-            </div>
-
             {/* Stats grid */}
-            <div style={{
-              display:"grid",
-              gridTemplateColumns:"1fr 1fr",
-              gap:1,
-              border:"1px solid var(--border)",
-              borderRadius:4,
-              overflow:"hidden",
-            }}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:1,border:"1px solid var(--border)",borderRadius:4,overflow:"hidden",marginBottom:isMobile?16:20}}>
               {[
-                {label:"TOTAL PAID",  value:"◎ "+fmtSOL(totalPaid)},
-                {label:"WINNERS",     value:totalRounds.toString()},
-                {label:"BIGGEST WIN", value:"◎ "+fmtSOL(biggestWin)},
-                {label:"MIN BUY",     value:"◎ "+MIN_BUY_SOL},
-              ].map(s=>(
-                <div key={s.label} style={{padding:"16px 20px",background:"var(--bg2)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>
+                {label:"CURRENT LEADER", value:lastBuyer?short(lastBuyer):"no leader yet", red:!!lastBuyer, full:true},
+                {label:"POT",            value:"◎ "+fmtSOL(currentPot)},
+                {label:"TOTAL PAID",     value:"◎ "+fmtSOL(totalPaid)},
+                {label:"WINNERS",        value:totalRounds.toString()},
+                {label:"BIGGEST WIN",    value:"◎ "+fmtSOL(biggestWin)},
+              ].map((s,i)=>(
+                <div key={s.label} style={{padding:isMobile?"14px":"20px 24px",background:"var(--bg2)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",gridColumn:s.full?"1 / -1":"auto"}}>
                   <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--greyDim)",marginBottom:6}}>{s.label}</div>
-                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:16,fontWeight:700,color:"var(--white)"}}>{s.value}</div>
+                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:s.full?isMobile?14:16:isMobile?14:18,color:s.red?"var(--red)":"var(--white)",fontWeight:700,wordBreak:"break-all"}}>{s.value}</div>
+                  {s.full && stats?.lastBuyAt && (
+                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,color:"var(--greyDim)",marginTop:4}}>bought {timeAgo(stats.lastBuyAt.toMillis())}</div>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {/* How it works */}
+            <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:16}}>
+              <div style={{flex:1,height:1,background:"var(--border)"}}/>
+              <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--grey)",whiteSpace:"nowrap"}}>HOW IT WORKS</div>
+              <div style={{flex:1,height:1,background:"var(--border)"}}/>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr 1fr":"repeat(4,1fr)",gap:1,border:"1px solid var(--border)",borderRadius:4,overflow:"hidden"}}>
+              {[
+                {n:"01",title:"BUY",     desc:"Buy ◎"+MIN_BUY_SOL+"+ to become leader"},
+                {n:"02",title:"LEAD",    desc:"Timer resets on every qualifying buy"},
+                {n:"03",title:"SURVIVE", desc:"Nobody buys before zero — you win"},
+                {n:"04",title:"WIN",     desc:"SOL sent on-chain instantly"},
+              ].map(s=>(
+                <div key={s.n} style={{padding:isMobile?"14px":"20px 16px",background:"var(--bg2)",borderRight:"1px solid var(--border)"}}>
+                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:isMobile?20:28,color:"rgba(255,32,32,0.15)",fontWeight:700,lineHeight:1,marginBottom:8}}>{s.n}</div>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:12,fontWeight:700,color:"var(--white)",letterSpacing:1,marginBottom:6}}>{s.title}</div>
+                  <div style={{fontFamily:"'Inter',sans-serif",fontSize:11,color:"var(--grey)",lineHeight:1.5}}>{s.desc}</div>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* ── RIGHT: Live buys feed ── */}
-          <div style={{position:"sticky",top:100}}>
-            <div style={{marginBottom:12,display:"flex",alignItems:"center",gap:10}}>
+          {/* RIGHT: live feed */}
+          <div style={{position:isMobile?"static":"sticky",top:80}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
               <div style={{flex:1,height:1,background:"var(--border)"}}/>
               <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--grey)",whiteSpace:"nowrap"}}>LIVE ACTIVITY</div>
               <div style={{flex:1,height:1,background:"var(--border)"}}/>
             </div>
             <BuyFeed buys={buys}/>
 
-            {/* Current leader callout */}
-            {lastBuyer && (
-              <div style={{
-                marginTop:16,
-                padding:"16px",
-                border:"1px solid var(--red)",
-                borderRadius:4,
-                background:"rgba(255,32,32,0.05)",
-                animation:"pulse-red 3s ease-in-out infinite",
-              }}>
+            {lastBuyer&&(
+              <div style={{marginTop:12,padding:"14px 16px",border:"1px solid var(--red)",borderRadius:4,background:"rgba(255,32,32,0.05)",animation:"pulse-red 3s ease-in-out infinite"}}>
                 <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--red)",marginBottom:8}}>★ LEADING NOW</div>
-                <div style={{fontFamily:"'Space Mono',monospace",fontSize:14,color:"var(--white)",wordBreak:"break-all"}}>{short(lastBuyer)}</div>
+                <div style={{fontFamily:"'Space Mono',monospace",fontSize:13,color:"var(--white)",wordBreak:"break-all"}}>{short(lastBuyer)}</div>
                 <div style={{fontFamily:"'Inter',sans-serif",fontSize:11,color:"var(--greyDim)",marginTop:6}}>
                   wins ◎{fmtSOL(currentPot)} if nobody buys before timer ends
                 </div>
@@ -438,84 +321,59 @@ export default function Home({ navigate }) {
             )}
           </div>
         </div>
+      </section>
 
-        {/* ── HOW IT WORKS ── */}
-        <div style={{marginTop:64}}>
-          <div style={{display:"flex",alignItems:"center",gap:20,marginBottom:28}}>
+      {/* ── RECENT WINNERS ── */}
+      {winners.length > 0 && (
+        <section style={{padding:isMobile?"0 16px 48px":"0 24px 80px",maxWidth:"var(--max-w)",margin:"0 auto",width:"100%"}}>
+          <div style={{display:"flex",alignItems:"center",gap:16,marginBottom:16}}>
             <div style={{flex:1,height:1,background:"var(--border)"}}/>
-            <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,fontWeight:700,letterSpacing:4,color:"var(--grey)",whiteSpace:"nowrap"}}>HOW IT WORKS</div>
+            <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--grey)",whiteSpace:"nowrap"}}>RECENT WINNERS</div>
             <div style={{flex:1,height:1,background:"var(--border)"}}/>
           </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:1,border:"1px solid var(--border)",borderRadius:4,overflow:"hidden"}}>
-            {[
-              {n:"01",title:"BUY",   desc:"Buy ◎"+MIN_BUY_SOL+" or more in a single transaction to become the current leader."},
-              {n:"02",title:"LEAD",  desc:"The 1-minute timer resets every time a qualifying buy happens. You are now leading."},
-              {n:"03",title:"HOLD",  desc:"If nobody buys before the timer hits zero — you win the entire accumulated pot."},
-              {n:"04",title:"WIN",   desc:"SOL sent directly to your wallet on-chain. Instant. Verifiable. No middleman."},
-            ].map(s=>(
-              <div key={s.n} style={{padding:"24px 20px",background:"var(--bg2)",borderRight:"1px solid var(--border)"}}>
-                <div style={{fontFamily:"'Space Mono',monospace",fontSize:28,color:"rgba(255,32,32,0.15)",fontWeight:700,lineHeight:1,marginBottom:10}}>{s.n}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:13,fontWeight:700,color:"var(--white)",letterSpacing:1,marginBottom:8}}>{s.title}</div>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:12,color:"var(--grey)",lineHeight:1.65}}>{s.desc}</div>
+          <div style={{display:"flex",flexDirection:"column",gap:1,border:"1px solid var(--border)",borderRadius:4,overflow:"hidden"}}>
+            {winners.map((w,i)=>(
+              <div key={w.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,padding:isMobile?"12px 14px":"14px 20px",background:i%2===0?"var(--bg2)":"var(--bg3)",flexWrap:"wrap"}}>
+                <div style={{display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"var(--greyDim)",minWidth:24}}>#{w.round||i+1}</div>
+                  <div>
+                    <div style={{fontFamily:"'Space Mono',monospace",fontSize:12,color:"var(--white)"}}>{short(w.winner)}</div>
+                    <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,color:"var(--grey)",marginTop:2}}>{w.timestamp?timeAgo(w.timestamp.toMillis()):""}</div>
+                  </div>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:14}}>
+                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:13,color:"var(--red)",fontWeight:700}}>◎ {fmtSOL(w.amount)}</div>
+                  {w.txSig&&(<a href={"https://solscan.io/tx/"+w.txSig} target="_blank" rel="noreferrer" style={{fontFamily:"'Inter',sans-serif",fontSize:10,letterSpacing:2,color:"var(--greyDim)",textDecoration:"underline"}}>TX ↗</a>)}
+                </div>
               </div>
             ))}
           </div>
-        </div>
-
-        {/* ── RECENT WINNERS ── */}
-        {winners.length > 0 && (
-          <div style={{marginTop:48}}>
-            <div style={{display:"flex",alignItems:"center",gap:20,marginBottom:20}}>
-              <div style={{flex:1,height:1,background:"var(--border)"}}/>
-              <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,fontWeight:700,letterSpacing:4,color:"var(--grey)",whiteSpace:"nowrap"}}>RECENT WINNERS</div>
-              <div style={{flex:1,height:1,background:"var(--border)"}}/>
-            </div>
-            <div style={{display:"flex",flexDirection:"column",gap:1,border:"1px solid var(--border)",borderRadius:4,overflow:"hidden"}}>
-              {winners.map((w,i)=>(
-                <div key={w.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:16,padding:"14px 20px",background:i%2===0?"var(--bg2)":"var(--bg3)",flexWrap:"wrap"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:16}}>
-                    <div style={{fontFamily:"'Space Mono',monospace",fontSize:11,color:"var(--greyDim)",minWidth:24}}>#{w.round||i+1}</div>
-                    <div style={{fontFamily:"'Space Mono',monospace",fontSize:12,color:"var(--white)"}}>{short(w.winner)}</div>
-                  </div>
-                  <div style={{display:"flex",alignItems:"center",gap:16}}>
-                    <div style={{fontFamily:"'Space Mono',monospace",fontSize:14,color:"var(--red)",fontWeight:700}}>◎ {fmtSOL(w.amount)}</div>
-                    {w.txSig && (
-                      <a href={"https://solscan.io/tx/"+w.txSig} target="_blank" rel="noreferrer"
-                        style={{fontFamily:"'Inter',sans-serif",fontSize:10,letterSpacing:2,color:"var(--greyDim)",textDecoration:"underline"}}>TX ↗</a>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div style={{textAlign:"center",marginTop:14}}>
-              <button onClick={()=>navigate("history")} className="btn-outline">VIEW ALL WINNERS</button>
-            </div>
+          <div style={{textAlign:"center",marginTop:14}}>
+            <button onClick={()=>navigate("history")} className="btn-outline">VIEW ALL WINNERS</button>
           </div>
-        )}
+        </section>
+      )}
 
-        {/* ── CA ── */}
-        <div style={{marginTop:48,border:"1px solid var(--border)",borderRadius:4,padding:"24px",background:"var(--bg2)"}}>
-          <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,fontWeight:700,letterSpacing:4,color:"var(--grey)",marginBottom:12}}>CONTRACT ADDRESS</div>
-          <div style={{fontFamily:"'Space Mono',monospace",fontSize:12,color:isLive?"var(--white)":"var(--grey)",wordBreak:"break-all",lineHeight:1.7,marginBottom:14,fontStyle:isLive?"normal":"italic"}}>
-            {isLive ? TOKEN_CA : "— contract address at launch —"}
+      {/* ── CA ── */}
+      <section style={{padding:isMobile?"0 16px 48px":"0 24px 80px",maxWidth:"var(--max-w)",margin:"0 auto",width:"100%"}}>
+        <div style={{border:"1px solid var(--border)",borderRadius:4,padding:isMobile?"16px":"24px",background:"var(--bg2)"}}>
+          <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--grey)",marginBottom:10}}>CONTRACT ADDRESS</div>
+          <div style={{fontFamily:"'Space Mono',monospace",fontSize:isMobile?9:12,color:isLive?"var(--white)":"var(--grey)",wordBreak:"break-all",lineHeight:1.7,marginBottom:14,fontStyle:isLive?"normal":"italic"}}>
+            {isLive?TOKEN_CA:"— contract address at launch —"}
           </div>
-          <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
-            {isLive && (
-              <button onClick={copyCA} className="btn-red" style={{fontSize:11,padding:"10px 20px"}}>
-                {copiedCA?"COPIED ✓":"COPY CA"}
-              </button>
-            )}
-            <a href={X_URL} target="_blank" rel="noreferrer">
-              <button className="btn-outline">𝕏 TWITTER</button>
+          <div style={{display:"flex",flexDirection:isMobile?"column":"row",gap:10}}>
+            {isLive&&(<button onClick={copyCA} className="btn-red" style={{fontSize:11,padding:"10px 20px",width:isMobile?"100%":"auto"}}>{copiedCA?"COPIED ✓":"COPY CA"}</button>)}
+            <a href={X_URL} target="_blank" rel="noreferrer" style={{width:isMobile?"100%":"auto"}}>
+              <button className="btn-outline" style={{width:isMobile?"100%":"auto"}}>𝕏 TWITTER</button>
             </a>
           </div>
         </div>
-      </div>
+      </section>
 
       {/* ── FOOTER ── */}
-      <footer style={{borderTop:"1px solid var(--border)",padding:"20px 28px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:12}}>
-        <div style={{fontFamily:"'Space Mono',monospace",fontSize:11,color:"var(--greyDim)"}}>LAST BUYER WINS — ON SOLANA</div>
-        <div style={{fontFamily:"'Inter',sans-serif",fontSize:11,color:"var(--greyDim)",fontStyle:"italic"}}>The clock resets. The pot grows. One wallet wins.</div>
+      <footer style={{borderTop:"1px solid var(--border)",padding:isMobile?"16px":"20px 28px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+        <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"var(--greyDim)"}}>LAST BUYER WINS — ON SOLANA</div>
+        {!isMobile&&<div style={{fontFamily:"'Inter',sans-serif",fontSize:11,color:"var(--greyDim)",fontStyle:"italic"}}>The clock resets. The pot grows. One wallet wins.</div>}
         <a href={X_URL} target="_blank" rel="noreferrer" style={{fontFamily:"'Inter',sans-serif",fontSize:11,letterSpacing:3,color:"var(--greyDim)",textDecoration:"none"}}>𝕏</a>
       </footer>
     </div>
