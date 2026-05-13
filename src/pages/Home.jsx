@@ -3,7 +3,7 @@ import { doc, onSnapshot, collection, query, orderBy, limit } from "firebase/fir
 import { db } from "../firebase";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const TOKEN_CA      = "COMING SOON..";
+const TOKEN_CA      = "PASTE_TOKEN_CA_HERE";
 const X_URL         = "https://x.com/REPLACE_HANDLE";
 const TIMER_DEFAULT = 60 * 1000;
 const MIN_BUY_SOL   = 0.1;
@@ -74,7 +74,7 @@ function BuyFeed({buys}) {
   return (
     <div style={{border:"1px solid var(--border)",borderRadius:4,overflow:"hidden",background:"var(--bg2)"}}>
       <div style={{padding:"8px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:8,background:"var(--bg3)"}}>
-        <div style={{width:6,height:6,borderRadius:"50%",background:"var(--red)",boxShadow:"0 0 8px rgba(255,32,32,0.8)",animation:"blink 1s ease infinite",flexShrink:0}}/>
+        <div style={{width:6,height:6,borderRadius:"50%",background:"var(--green)",boxShadow:"0 0 8px rgba(57,255,20,0.8)",animation:"blink 1s ease infinite",flexShrink:0}}/>
         <span style={{fontFamily:"'Space Mono',monospace",fontSize:9,letterSpacing:3,color:"var(--grey)"}}>LIVE BUYS</span>
         <span style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:"var(--greyDim)",marginLeft:"auto"}}>{buys.length} this round</span>
       </div>
@@ -82,18 +82,18 @@ function BuyFeed({buys}) {
         {buys.map((buy,i)=>{
           const isLeader = buy.isLeader;
           return (
-            <div key={buy.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderBottom:i<buys.length-1?"1px solid rgba(255,255,255,0.04)":"none",background:isLeader?"rgba(255,32,32,0.06)":"transparent",animation:i===0?"slide-up 0.3s ease":"none"}}>
-              <div style={{width:22,height:22,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:isLeader?"var(--red)":"var(--greyDim)",fontFamily:"'Space Mono',monospace",fontSize:9,fontWeight:700,color:isLeader?"#fff":"var(--grey)",flexShrink:0,boxShadow:isLeader?"0 0 10px rgba(255,32,32,0.5)":"none"}}>
+            <div key={buy.id} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",borderBottom:i<buys.length-1?"1px solid rgba(255,255,255,0.04)":"none",background:isLeader?"rgba(57,255,20,0.05)":"transparent",animation:i===0?"slide-up 0.3s ease":"none"}}>
+              <div style={{width:22,height:22,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:isLeader?"var(--green)":"var(--greyDim)",fontFamily:"'Space Mono',monospace",fontSize:9,fontWeight:700,color:isLeader?"#fff":"var(--grey)",flexShrink:0,boxShadow:isLeader?"0 0 10px rgba(57,255,20,0.5)":"none"}}>
                 {isLeader?"★":i+1}
               </div>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{fontFamily:"'Space Mono',monospace",fontSize:isLeader?13:11,color:isLeader?"var(--red)":"var(--grey)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:isLeader?700:400}}>
+                <div style={{fontFamily:"'Space Mono',monospace",fontSize:isLeader?13:11,color:isLeader?"var(--green)":"var(--grey)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:isLeader?700:400}}>
                   {short(buy.wallet)}
                 </div>
                 {isLeader&&<div style={{fontFamily:"'Inter',sans-serif",fontSize:8,letterSpacing:3,color:"var(--red)",marginTop:2,opacity:0.8}}>CURRENT LEADER</div>}
               </div>
               <div style={{textAlign:"right",flexShrink:0}}>
-                <div style={{fontFamily:"'Space Mono',monospace",fontSize:12,color:isLeader?"var(--red)":"var(--white)",fontWeight:isLeader?700:400}}>◎ {fmtSOL(buy.amount)}</div>
+                <div style={{fontFamily:"'Space Mono',monospace",fontSize:12,color:isLeader?"var(--green)":"var(--white)",fontWeight:isLeader?700:400}}>◎ {fmtSOL(buy.amount)}</div>
                 <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,color:"var(--greyDim)",marginTop:2}}>{buy.timestamp?timeAgo(buy.timestamp.toMillis()):""}</div>
               </div>
               {buy.sig&&(
@@ -219,7 +219,7 @@ export default function Home({navigate}) {
         <div style={{position:"absolute",width:isMobile?300:600,height:isMobile?300:600,borderRadius:"50%",background:"radial-gradient(circle, rgba(255,32,32,0.06) 0%, transparent 70%)",pointerEvents:"none",animation:urgent?"pulse-red 1s ease-in-out infinite":"none"}}/>
 
         {/* Status */}
-        <div style={{fontFamily:"'Space Mono',monospace",fontSize:isMobile?9:11,letterSpacing:4,color:urgent?"var(--red)":"var(--grey)",marginBottom:isMobile?16:24,animation:urgent?"blink 1s ease infinite":"none"}}>
+        <div style={{fontFamily:"'Space Mono',monospace",fontSize:isMobile?9:11,letterSpacing:4,color:urgent?"var(--green)":"var(--grey)",marginBottom:isMobile?16:24,animation:urgent?"blink 1s ease infinite":"none"}}>
           {isWaiting?"⏳ PROCESSING...":urgent?"⚠ FINAL COUNTDOWN":"● LIVE"}
         </div>
 
@@ -233,7 +233,7 @@ export default function Home({navigate}) {
         </div>
 
         {/* Pot box */}
-        <div style={{textAlign:"center",marginBottom:isMobile?24:40,padding:isMobile?"16px 24px":"20px 48px",border:"1px solid "+(urgent?"var(--red)":"var(--border)"),borderRadius:4,background:urgent?"rgba(255,32,32,0.05)":"var(--card)",transition:"all 0.3s",animation:urgent?"pulse-red 1.5s ease-in-out infinite":"none",width:isMobile?"100%":"auto",maxWidth:isMobile?"none":400}}>
+        <div style={{textAlign:"center",marginBottom:isMobile?24:40,padding:isMobile?"16px 24px":"20px 48px",border:"1px solid "+(urgent?"var(--red)":"var(--greenBorder)"),borderRadius:4,background:urgent?"rgba(255,32,32,0.05)":"rgba(57,255,20,0.03)",transition:"all 0.3s",animation:urgent?"pulse-red 1.5s ease-in-out infinite":"none",width:isMobile?"100%":"auto",maxWidth:isMobile?"none":400}}>
           <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,fontWeight:700,letterSpacing:4,color:"var(--grey)",marginBottom:8}}>CURRENT POT</div>
           <div style={{fontFamily:"'Space Mono',monospace",fontSize:isMobile?"clamp(24px,8vw,36px)":"clamp(28px,5vw,48px)",fontWeight:700,color:"var(--white)"}}>
             ◎ {fmtSOL(currentPot)}
@@ -271,7 +271,7 @@ export default function Home({navigate}) {
               ].map((s,i)=>(
                 <div key={s.label} style={{padding:isMobile?"14px":"20px 24px",background:"var(--bg2)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",gridColumn:s.full?"1 / -1":"auto"}}>
                   <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--greyDim)",marginBottom:6}}>{s.label}</div>
-                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:s.full?isMobile?14:16:isMobile?14:18,color:s.red?"var(--red)":"var(--white)",fontWeight:700,wordBreak:"break-all"}}>{s.value}</div>
+                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:s.full?isMobile?14:16:isMobile?14:18,color:s.red?"var(--green)":"var(--white)",fontWeight:700,wordBreak:"break-all"}}>{s.value}</div>
                   {s.full && stats?.lastBuyAt && (
                     <div style={{fontFamily:"'Inter',sans-serif",fontSize:10,color:"var(--greyDim)",marginTop:4}}>bought {timeAgo(stats.lastBuyAt.toMillis())}</div>
                   )}
@@ -311,8 +311,8 @@ export default function Home({navigate}) {
             <BuyFeed buys={buys}/>
 
             {lastBuyer&&(
-              <div style={{marginTop:12,padding:"14px 16px",border:"1px solid var(--red)",borderRadius:4,background:"rgba(255,32,32,0.05)",animation:"pulse-red 3s ease-in-out infinite"}}>
-                <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--red)",marginBottom:8}}>★ LEADING NOW</div>
+              <div style={{marginTop:12,padding:"14px 16px",border:"1px solid var(--green)",borderRadius:4,background:"rgba(57,255,20,0.04)",animation:"pulse-green 3s ease-in-out infinite"}}>
+                <div style={{fontFamily:"'Inter',sans-serif",fontSize:9,fontWeight:700,letterSpacing:4,color:"var(--green)",marginBottom:8}}>★ LEADING NOW</div>
                 <div style={{fontFamily:"'Space Mono',monospace",fontSize:13,color:"var(--white)",wordBreak:"break-all"}}>{short(lastBuyer)}</div>
                 <div style={{fontFamily:"'Inter',sans-serif",fontSize:11,color:"var(--greyDim)",marginTop:6}}>
                   wins ◎{fmtSOL(currentPot)} if nobody buys before timer ends
@@ -342,7 +342,7 @@ export default function Home({navigate}) {
                   </div>
                 </div>
                 <div style={{display:"flex",alignItems:"center",gap:14}}>
-                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:13,color:"var(--red)",fontWeight:700}}>◎ {fmtSOL(w.amount)}</div>
+                  <div style={{fontFamily:"'Space Mono',monospace",fontSize:13,color:"var(--green)",fontWeight:700}}>◎ {fmtSOL(w.amount)}</div>
                   {w.txSig&&(<a href={"https://solscan.io/tx/"+w.txSig} target="_blank" rel="noreferrer" style={{fontFamily:"'Inter',sans-serif",fontSize:10,letterSpacing:2,color:"var(--greyDim)",textDecoration:"underline"}}>TX ↗</a>)}
                 </div>
               </div>
@@ -362,7 +362,7 @@ export default function Home({navigate}) {
             {isLive?TOKEN_CA:"— contract address at launch —"}
           </div>
           <div style={{display:"flex",flexDirection:isMobile?"column":"row",gap:10}}>
-            {isLive&&(<button onClick={copyCA} className="btn-red" style={{fontSize:11,padding:"10px 20px",width:isMobile?"100%":"auto"}}>{copiedCA?"COPIED ✓":"COPY CA"}</button>)}
+            {isLive&&(<button onClick={copyCA} className="btn-green" style={{fontSize:11,padding:"10px 20px",width:isMobile?"100%":"auto"}}>{copiedCA?"COPIED ✓":"COPY CA"}</button>)}
             <a href={X_URL} target="_blank" rel="noreferrer" style={{width:isMobile?"100%":"auto"}}>
               <button className="btn-outline" style={{width:isMobile?"100%":"auto"}}>𝕏 TWITTER</button>
             </a>

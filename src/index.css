@@ -3,20 +3,30 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:       #080808;
-  --bg2:      #101010;
-  --bg3:      #181818;
-  --red:      #FF2020;
-  --red2:     #FF5555;
-  --red3:     #FF8888;
-  --redDim:   rgba(255,32,32,0.12);
-  --redBorder:rgba(255,32,32,0.25);
-  --white:    #FFFFFF;
-  --grey:     #888888;
-  --greyDim:  #333333;
-  --border:   rgba(255,255,255,0.08);
-  --card:     rgba(255,255,255,0.03);
-  --max-w:    1040px;
+  --bg:         #080808;
+  --bg2:        #0e0e0e;
+  --bg3:        #161616;
+
+  /* Green — primary brand accent (matches logo "WINS") */
+  --green:      #39FF14;   /* neon green — electric, matches logo */
+  --green2:     #2DD10F;   /* slightly deeper */
+  --green3:     #1A8A00;   /* dark green for backgrounds */
+  --greenDim:   rgba(57,255,20,0.10);
+  --greenBorder:rgba(57,255,20,0.25);
+  --greenGlow:  rgba(57,255,20,0.4);
+
+  /* Red — urgency only (final countdown, danger) */
+  --red:        #FF2020;
+  --red2:       #FF5555;
+  --redDim:     rgba(255,32,32,0.10);
+  --redBorder:  rgba(255,32,32,0.25);
+
+  --white:      #FFFFFF;
+  --grey:       #777777;
+  --greyDim:    #2e2e2e;
+  --border:     rgba(255,255,255,0.07);
+  --card:       rgba(255,255,255,0.025);
+  --max-w:      1040px;
 }
 
 html { scroll-behavior: smooth; }
@@ -29,7 +39,7 @@ html, body, #root {
   overflow-x: hidden;
 }
 
-/* Scanline overlay — subtle CRT effect */
+/* Scanline overlay */
 body::before {
   content: '';
   position: fixed;
@@ -38,9 +48,23 @@ body::before {
     0deg,
     transparent,
     transparent 2px,
-    rgba(0,0,0,0.03) 2px,
-    rgba(0,0,0,0.03) 4px
+    rgba(0,0,0,0.025) 2px,
+    rgba(0,0,0,0.025) 4px
   );
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Subtle green ambient glow at top */
+body::after {
+  content: '';
+  position: fixed;
+  top: -200px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 400px;
+  background: radial-gradient(ellipse, rgba(57,255,20,0.04) 0%, transparent 70%);
   pointer-events: none;
   z-index: 0;
 }
@@ -50,12 +74,16 @@ body::before {
   0%,100% { opacity: 1; }
   50%      { opacity: 0; }
 }
+@keyframes pulse-green {
+  0%,100% { box-shadow: 0 0 20px rgba(57,255,20,0.2); }
+  50%      { box-shadow: 0 0 50px rgba(57,255,20,0.5), 0 0 100px rgba(57,255,20,0.2); }
+}
 @keyframes pulse-red {
   0%,100% { box-shadow: 0 0 20px rgba(255,32,32,0.3); }
   50%      { box-shadow: 0 0 50px rgba(255,32,32,0.7), 0 0 100px rgba(255,32,32,0.3); }
 }
 @keyframes slide-up {
-  from { opacity: 0; transform: translateY(20px); }
+  from { opacity: 0; transform: translateY(16px); }
   to   { opacity: 1; transform: translateY(0);    }
 }
 @keyframes fade-in {
@@ -73,26 +101,37 @@ body::before {
   60%     { transform: translateX(-2px); }
   80%     { transform: translateX(2px); }
 }
-@keyframes winner-flash {
-  0%,100% { background: transparent; }
-  50%      { background: rgba(255,32,32,0.08); }
-}
-@keyframes count-in {
-  from { opacity:0; transform: scale(1.1); }
-  to   { opacity:1; transform: scale(1);   }
-}
-@keyframes draw-line {
-  from { width: 0; }
-  to   { width: 100%; }
+@keyframes green-flicker {
+  0%,95%,100% { opacity: 1; }
+  97%          { opacity: 0.7; }
 }
 
 /* ── Utilities ── */
-.slide-up  { animation: slide-up 0.5s ease both; }
-.fade-in   { animation: fade-in  0.4s ease both; }
+.slide-up  { animation: slide-up 0.4s ease both; }
+.fade-in   { animation: fade-in  0.3s ease both; }
 .mono      { font-family: 'Space Mono', monospace; }
 .page      { position: relative; z-index: 1; min-height: 100vh; }
 
-/* ── Buttons ── */
+/* ── Primary button — green ── */
+.btn-green {
+  background: var(--green);
+  border: none; border-radius: 4px;
+  color: #000; cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  font-size: 13px; font-weight: 800;
+  letter-spacing: 2px; text-transform: uppercase;
+  padding: 12px 28px;
+  transition: all 0.15s ease;
+  box-shadow: 0 0 20px rgba(57,255,20,0.25);
+}
+.btn-green:hover {
+  background: var(--green2);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 24px rgba(57,255,20,0.45);
+}
+.btn-green:active { transform: translateY(0); }
+
+/* Keep btn-red for urgent moments */
 .btn-red {
   background: var(--red);
   border: none; border-radius: 4px;
@@ -123,8 +162,8 @@ body::before {
   transition: all 0.15s ease;
 }
 .btn-outline:hover {
-  border-color: rgba(255,255,255,0.3);
-  color: var(--white);
+  border-color: var(--greenBorder);
+  color: var(--green);
 }
 
 /* ── Card ── */
@@ -137,7 +176,7 @@ body::before {
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 3px; }
-::-webkit-scrollbar-thumb { background: var(--greyDim); border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: var(--green3); border-radius: 2px; }
 
 /* ── Responsive ── */
 @media (max-width: 768px) {
