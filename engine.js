@@ -17,7 +17,6 @@ const SOLANA_RPC      = process.env.SOLANA_RPC || "https://api.mainnet-beta.sola
 const GAS_RESERVE_SOL = parseFloat(process.env.GAS_RESERVE_SOL || "0.005");
 const MIN_BUY_SOL     = parseFloat(process.env.MIN_BUY_SOL     || "0.1");
 const TIMER_MS        = parseInt(process.env.TIMER_MS          || "60000");
-const POLL_MS         = 3000; // poll every 3 seconds as backup
 
 const PUMP_PROGRAM_ID = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 
@@ -47,7 +46,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let lastBuyerWallet = null;
 let winTimer        = null;
 let isPayingOut     = false;
-let processedSigs   = new Set(); // shared between WebSocket and poll
+let processedSigs   = new Set();
 
 async function withRetry(fn, retries, label) {
   for (let i = 0; i <= retries; i++) {
@@ -145,36 +144,57 @@ async function triggerPayout() {
     const sendSOLAmt = sendLam / LAMPORTS_PER_SOL;
 
     if (sendLam <= 0) {
-      log("Pot empty — new round.");
+      log("Pot empty — waiting for fees to accumulate, retrying in 30s...");
+      await sleep(30000);
+      // Try again after waiting
+      const balLam2    = await getBalanceLamports();
+      const sendLam2   = balLam2 - gasLam;
+      const sendAmt2   = sendLam2 / LAMPORTS_PER_SOL;
+      if (sendLam2 <= 0) {
+        log("Still empty — starting new round.");
+        await startNewRound();
+        isPayingOut = false;
+        return;
+      }
+      log("Pot now has ◎" + sendAmt2.toFixed(6) + " — proceeding.");
+    }
+
+    // Re-read balance for final send
+    const finalBal  = await getBalanceLamports();
+    const finalSend = finalBal - gasLam;
+    const finalSOL  = finalSend / LAMPORTS_PER_SOL;
+
+    if (finalSend <= 0) {
+      log("Pot empty after retry — starting new round.");
       await startNewRound();
       isPayingOut = false;
       return;
     }
 
-    log("Sending ◎" + sendSOLAmt.toFixed(6) + " to " + winner);
-    const txSig = await sendSOL(winner, sendLam);
+    log("Sending ◎" + finalSOL.toFixed(6) + " to " + winner);
+    const txSig = await sendSOL(winner, finalSend);
     log("TX: " + txSig);
 
     await db.collection("lbw_history").add({
-      winner: winner, amount: sendSOLAmt,
+      winner: winner, amount: finalSOL,
       txSig: txSig, timestamp: Timestamp.now(),
     });
 
     const statsUp = {
-      totalPaid:    FieldValue.increment(sendSOLAmt),
+      totalPaid:    FieldValue.increment(finalSOL),
       totalRounds:  FieldValue.increment(1),
       lastWinner:   winner,
       lastWinAt:    Timestamp.now(),
-      lastWinAmount:sendSOLAmt,
+      lastWinAmount:finalSOL,
       currentPotSOL:0,
     };
     const gs = await db.doc("lbw_stats/global").get();
-    if (gs.exists && sendSOLAmt > (gs.data().biggestWin || 0)) {
-      statsUp.biggestWin = sendSOLAmt;
+    if (gs.exists && finalSOL > (gs.data().biggestWin || 0)) {
+      statsUp.biggestWin = finalSOL;
     }
     await db.doc("lbw_stats/global").set(statsUp, { merge:true });
 
-    log("=== Payout complete ===");
+    log("=== Payout complete ◎" + finalSOL.toFixed(6) + " ===");
     await startNewRound();
 
   } catch (e) {
@@ -209,12 +229,11 @@ async function startNewRound() {
   resetTimer();
 }
 
-// ── PROCESS A SINGLE TRANSACTION ─────────────────────────────────────────────
+// ── PROCESS TRANSACTION ───────────────────────────────────────────────────────
 async function processTx(sig, bondingCurveStr) {
   if (processedSigs.has(sig)) return;
   processedSigs.add(sig);
 
-  // Trim set if too large
   if (processedSigs.size > 1000) {
     const arr = Array.from(processedSigs);
     processedSigs = new Set(arr.slice(arr.length - 500));
@@ -232,7 +251,6 @@ async function processTx(sig, bondingCurveStr) {
     const preBalances  = tx.meta.preBalances  || [];
     const postBalances = tx.meta.postBalances || [];
 
-    // Find buyer = account whose SOL decreased most
     let maxDecrease = 0;
     let buyerIndex  = -1;
 
@@ -249,7 +267,6 @@ async function processTx(sig, bondingCurveStr) {
     const solSpent = maxDecrease / LAMPORTS_PER_SOL;
     const buyer    = accounts[buyerIndex].toString();
 
-    // Skip system accounts
     if (buyer === bondingCurveStr) return;
     if (buyer === PUMP_PROGRAM_ID.toString()) return;
     if (buyer === CREATOR_WALLET) return;
@@ -261,11 +278,11 @@ async function processTx(sig, bondingCurveStr) {
     }
 
   } catch (e) {
-    // silent — tx might not be confirmed yet
+    // silent
   }
 }
 
-// ── WEBSOCKET — fires instantly on every tx ──────────────────────────────────
+// ── WEBSOCKET — instant detection ────────────────────────────────────────────
 function subscribeWebSocket(bondingCurve) {
   const str = bondingCurve.toString();
   log("WebSocket subscribing to: " + str);
@@ -280,38 +297,17 @@ function subscribeWebSocket(bondingCurve) {
     "confirmed"
   );
 
-  log("WebSocket active.");
+  log("WebSocket active — every buy appears here instantly.");
 }
 
-// ── POLL — checks every 3s as backup to catch anything WebSocket misses ──────
-async function pollLoop(bondingCurve) {
-  const str = bondingCurve.toString();
-  log("Poll loop started — every " + POLL_MS/1000 + "s");
-
-  while (true) {
-    await sleep(POLL_MS);
-    try {
-      // Get last 10 signatures on the bonding curve
-      const sigs = await connection.getSignaturesForAddress(bondingCurve, { limit: 10 });
-      for (const sigInfo of sigs) {
-        if (sigInfo.err) continue;
-        // processTx skips already-processed sigs via the Set
-        await processTx(sigInfo.signature, str);
-      }
-    } catch (e) {
-      // silent — RPC hiccup
-    }
-  }
-}
-
-// ── BALANCE UPDATE LOOP ───────────────────────────────────────────────────────
+// ── BALANCE UPDATE ────────────────────────────────────────────────────────────
 async function balanceUpdateLoop() {
   while (true) {
     try {
       const balLam = await getBalanceLamports();
       await updateGlobal({ currentPotSOL: balLam / LAMPORTS_PER_SOL });
     } catch {}
-    await sleep(30000);
+    await sleep(15000); // every 15s — keeps pot display fresh
   }
 }
 
@@ -322,7 +318,7 @@ console.log("  Token  : " + TOKEN_CA);
 log("Gas Reserve : ◎" + GAS_RESERVE_SOL);
 log("Min Buy     : ◎" + MIN_BUY_SOL + " SOL");
 log("Timer       : " + (TIMER_MS/60000) + " min");
-log("Detection   : WebSocket + " + POLL_MS/1000 + "s poll backup");
+log("Detection   : WebSocket real-time");
 log("────────────────────────────────────────────");
 
 db.doc("lbw_stats/global").get().then(snap => {
@@ -341,6 +337,5 @@ const bondingCurve = deriveBondingCurve(mintPubkey);
 
 startAutoClaimFees(connection, creatorKP, log);
 startNewRound();
-subscribeWebSocket(bondingCurve);  // instant detection
-pollLoop(bondingCurve);            // 3s backup — catches anything WebSocket misses
-balanceUpdateLoop();               // 30s balance refresh
+subscribeWebSocket(bondingCurve);
+balanceUpdateLoop();
