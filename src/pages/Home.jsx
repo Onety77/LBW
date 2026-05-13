@@ -3,7 +3,7 @@ import { doc, onSnapshot, collection, query, orderBy, limit } from "firebase/fir
 import { db } from "../firebase";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-const TOKEN_CA      = "PASTE_TOKEN_CA_HERE";
+const TOKEN_CA      = "COMING SOON..";
 const X_URL         = "https://x.com/REPLACE_HANDLE";
 const TIMER_DEFAULT = 60 * 1000;
 const MIN_BUY_SOL   = 0.1;
