@@ -18,7 +18,12 @@ const GAS_RESERVE_SOL = parseFloat(process.env.GAS_RESERVE_SOL || "0.005");
 const MIN_BUY_SOL     = parseFloat(process.env.MIN_BUY_SOL     || "0.1");
 const TIMER_MS        = parseInt(process.env.TIMER_MS          || "60000");
 
-const PUMP_PROGRAM_ID = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+// If token has already graduated, set RAYDIUM_POOL in Railway env
+// Engine will use it directly without needing to detect graduation
+const RAYDIUM_POOL    = process.env.RAYDIUM_POOL || null;
+
+const PUMP_PROGRAM_ID    = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+const PUMPSWAP_PROGRAM_ID= new PublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA");
 
 // ── STARTUP CHECKS ──────────────────────────────────────────────────────────
 const missing = ["CREATOR_PRIVATE_KEY","FIREBASE_SERVICE_ACCOUNT_JSON","CREATOR_WALLET","TOKEN_CA"]
@@ -43,11 +48,38 @@ const db = getFirestore();
 const log   = (m) => console.log("[" + new Date().toISOString() + "] " + m);
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-let lastBuyerWallet = null;
-let winTimer        = null;
-let isPayingOut     = false;
-let processedSigs   = new Set();
+let lastBuyerWallet  = null;
+let winTimer         = null;
+let isPayingOut      = false;
+let processedSigs    = new Set();
+let currentWatchAddr = null; // the account we are currently subscribed to
+let wsSubId          = null; // subscription id so we can unsub if needed
 
+// ── DERIVE PDAs ───────────────────────────────────────────────────────────────
+function deriveBondingCurve(mintPubkey) {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("bonding-curve"), mintPubkey.toBuffer()],
+    PUMP_PROGRAM_ID
+  );
+  return pda;
+}
+
+// ── CHECK IF TOKEN HAS GRADUATED ─────────────────────────────────────────────
+// Bonding curve account has a "complete" flag set to true after graduation
+async function isGraduated(bondingCurve) {
+  try {
+    const info = await connection.getAccountInfo(bondingCurve);
+    if (!info || !info.data) return false;
+    // pump.fun bonding curve: byte at offset 0x08 is the "complete" bool
+    // If account doesn't exist or has minimal data — graduated
+    if (info.data.length < 10) return true;
+    return info.data[8] === 1;
+  } catch {
+    return false;
+  }
+}
+
+// ── SOLANA HELPERS ────────────────────────────────────────────────────────────
 async function withRetry(fn, retries, label) {
   for (let i = 0; i <= retries; i++) {
     try { return await fn(); }
@@ -77,14 +109,7 @@ async function updateGlobal(fields) {
   catch (e) { log("  updateGlobal error: " + e.message); }
 }
 
-function deriveBondingCurve(mintPubkey) {
-  const [pda] = PublicKey.findProgramAddressSync(
-    [Buffer.from("bonding-curve"), mintPubkey.toBuffer()],
-    PUMP_PROGRAM_ID
-  );
-  return pda;
-}
-
+// ── TIMER ────────────────────────────────────────────────────────────────────
 function resetTimer() {
   if (winTimer) clearTimeout(winTimer);
   const nextWinAt = Date.now() + TIMER_MS;
@@ -93,6 +118,7 @@ function resetTimer() {
   log("  Timer reset — winner at " + new Date(nextWinAt).toISOString());
 }
 
+// ── UPDATE LEADER ─────────────────────────────────────────────────────────────
 async function updateLeader(wallet, solAmount, sig) {
   log("  ★ NEW LEADER: " + wallet + " | ◎" + solAmount.toFixed(4));
   lastBuyerWallet = wallet;
@@ -105,7 +131,6 @@ async function updateLeader(wallet, solAmount, sig) {
       timestamp: Timestamp.now(),
       isLeader:  true,
     });
-
     const prev = await db.collection("lbw_buys").where("isLeader","==",true).get();
     const batch = db.batch();
     prev.docs.forEach(d => {
@@ -113,88 +138,60 @@ async function updateLeader(wallet, solAmount, sig) {
     });
     await batch.commit();
   } catch (e) {
-    log("  lbw_buys write error: " + e.message);
+    log("  lbw_buys error: " + e.message);
   }
 
-  await updateGlobal({
-    lastBuyer:  wallet,
-    lastBuyAt:  Timestamp.now(),
-    lastBuySOL: solAmount,
-  });
-
+  await updateGlobal({ lastBuyer: wallet, lastBuyAt: Timestamp.now(), lastBuySOL: solAmount });
   resetTimer();
 }
 
+// ── PAYOUT ────────────────────────────────────────────────────────────────────
 async function triggerPayout() {
   if (isPayingOut) return;
-  if (!lastBuyerWallet) {
-    log("No leader yet — resetting timer.");
-    resetTimer();
-    return;
-  }
+  if (!lastBuyerWallet) { log("No leader — resetting."); resetTimer(); return; }
 
   isPayingOut = true;
   const winner = lastBuyerWallet;
   log("\n=== PAYOUT — Winner: " + winner + " ===");
 
   try {
-    const balLam     = await getBalanceLamports();
-    const gasLam     = Math.ceil(GAS_RESERVE_SOL * LAMPORTS_PER_SOL);
-    const sendLam    = balLam - gasLam;
-    const sendSOLAmt = sendLam / LAMPORTS_PER_SOL;
+    const balLam  = await getBalanceLamports();
+    const gasLam  = Math.ceil(GAS_RESERVE_SOL * LAMPORTS_PER_SOL);
+    let sendLam   = balLam - gasLam;
 
     if (sendLam <= 0) {
-      log("Pot empty — waiting for fees to accumulate, retrying in 30s...");
+      log("Pot empty — waiting 30s for fees...");
       await sleep(30000);
-      // Try again after waiting
-      const balLam2    = await getBalanceLamports();
-      const sendLam2   = balLam2 - gasLam;
-      const sendAmt2   = sendLam2 / LAMPORTS_PER_SOL;
-      if (sendLam2 <= 0) {
-        log("Still empty — starting new round.");
+      const bal2 = await getBalanceLamports();
+      sendLam = bal2 - gasLam;
+      if (sendLam <= 0) {
+        log("Still empty — new round.");
         await startNewRound();
         isPayingOut = false;
         return;
       }
-      log("Pot now has ◎" + sendAmt2.toFixed(6) + " — proceeding.");
     }
 
-    // Re-read balance for final send
-    const finalBal  = await getBalanceLamports();
-    const finalSend = finalBal - gasLam;
-    const finalSOL  = finalSend / LAMPORTS_PER_SOL;
-
-    if (finalSend <= 0) {
-      log("Pot empty after retry — starting new round.");
-      await startNewRound();
-      isPayingOut = false;
-      return;
-    }
-
-    log("Sending ◎" + finalSOL.toFixed(6) + " to " + winner);
-    const txSig = await sendSOL(winner, finalSend);
+    const sendSOLAmt = sendLam / LAMPORTS_PER_SOL;
+    log("Sending ◎" + sendSOLAmt.toFixed(6) + " to " + winner);
+    const txSig = await sendSOL(winner, sendLam);
     log("TX: " + txSig);
 
     await db.collection("lbw_history").add({
-      winner: winner, amount: finalSOL,
-      txSig: txSig, timestamp: Timestamp.now(),
+      winner, amount: sendSOLAmt, txSig, timestamp: Timestamp.now(),
     });
 
     const statsUp = {
-      totalPaid:    FieldValue.increment(finalSOL),
-      totalRounds:  FieldValue.increment(1),
-      lastWinner:   winner,
-      lastWinAt:    Timestamp.now(),
-      lastWinAmount:finalSOL,
-      currentPotSOL:0,
+      totalPaid: FieldValue.increment(sendSOLAmt),
+      totalRounds: FieldValue.increment(1),
+      lastWinner: winner, lastWinAt: Timestamp.now(),
+      lastWinAmount: sendSOLAmt, currentPotSOL: 0,
     };
     const gs = await db.doc("lbw_stats/global").get();
-    if (gs.exists && finalSOL > (gs.data().biggestWin || 0)) {
-      statsUp.biggestWin = finalSOL;
-    }
+    if (gs.exists && sendSOLAmt > (gs.data().biggestWin || 0)) statsUp.biggestWin = sendSOLAmt;
     await db.doc("lbw_stats/global").set(statsUp, { merge:true });
 
-    log("=== Payout complete ◎" + finalSOL.toFixed(6) + " ===");
+    log("=== Payout ◎" + sendSOLAmt.toFixed(6) + " complete ===");
     await startNewRound();
 
   } catch (e) {
@@ -206,6 +203,7 @@ async function triggerPayout() {
   isPayingOut = false;
 }
 
+// ── NEW ROUND ─────────────────────────────────────────────────────────────────
 async function startNewRound() {
   log("Starting new round...");
   lastBuyerWallet = null;
@@ -229,11 +227,10 @@ async function startNewRound() {
   resetTimer();
 }
 
-// ── PROCESS TRANSACTION ───────────────────────────────────────────────────────
-async function processTx(sig, bondingCurveStr) {
+// ── PROCESS TX ────────────────────────────────────────────────────────────────
+async function processTx(sig, watchedAddrStr) {
   if (processedSigs.has(sig)) return;
   processedSigs.add(sig);
-
   if (processedSigs.size > 1000) {
     const arr = Array.from(processedSigs);
     processedSigs = new Set(arr.slice(arr.length - 500));
@@ -267,8 +264,9 @@ async function processTx(sig, bondingCurveStr) {
     const solSpent = maxDecrease / LAMPORTS_PER_SOL;
     const buyer    = accounts[buyerIndex].toString();
 
-    if (buyer === bondingCurveStr) return;
+    if (buyer === watchedAddrStr) return;
     if (buyer === PUMP_PROGRAM_ID.toString()) return;
+    if (buyer === PUMPSWAP_PROGRAM_ID.toString()) return;
     if (buyer === CREATOR_WALLET) return;
 
     log("  [tx] " + sig.slice(0,16) + "... " + buyer.slice(0,8) + "... ◎" + solSpent.toFixed(4));
@@ -277,18 +275,19 @@ async function processTx(sig, bondingCurveStr) {
       await updateLeader(buyer, solSpent, sig);
     }
 
-  } catch (e) {
-    // silent
-  }
+  } catch {}
 }
 
-// ── WEBSOCKET — instant detection ────────────────────────────────────────────
-function subscribeWebSocket(bondingCurve) {
-  const str = bondingCurve.toString();
-  log("WebSocket subscribing to: " + str);
+// ── SUBSCRIBE TO AN ADDRESS ───────────────────────────────────────────────────
+function subscribeToAddress(address) {
+  const str = address.toString();
+  if (currentWatchAddr === str) return; // already watching this
+  currentWatchAddr = str;
+
+  log("Subscribing to: " + str);
 
   connection.onLogs(
-    bondingCurve,
+    address,
     async ({ signature, err }) => {
       if (err) return;
       log("  [ws] " + signature.slice(0,16) + "...");
@@ -297,17 +296,41 @@ function subscribeWebSocket(bondingCurve) {
     "confirmed"
   );
 
-  log("WebSocket active — every buy appears here instantly.");
+  log("WebSocket active on: " + str);
 }
 
-// ── BALANCE UPDATE ────────────────────────────────────────────────────────────
+// ── GRADUATION WATCHER ────────────────────────────────────────────────────────
+// Checks every 2 minutes if the bonding curve has graduated
+// When it does, switches WebSocket to the PumpSwap pool
+async function graduationWatcher(bondingCurve) {
+  // If RAYDIUM_POOL is already set — token already graduated, skip watching
+  if (RAYDIUM_POOL) return;
+
+  log("Graduation watcher started — checks every 2min");
+
+  while (true) {
+    await sleep(2 * 60 * 1000);
+    try {
+      const graduated = await isGraduated(bondingCurve);
+      if (graduated) {
+        log("🎓 TOKEN GRADUATED! Switching to PumpSwap pool...");
+        log("Add RAYDIUM_POOL to Railway env with the pool address from Raydium/Solscan");
+        log("Then redeploy to complete the switch.");
+        // Engine keeps running on bonding curve until pool address is provided
+        break;
+      }
+    } catch {}
+  }
+}
+
+// ── BALANCE LOOP ──────────────────────────────────────────────────────────────
 async function balanceUpdateLoop() {
   while (true) {
     try {
       const balLam = await getBalanceLamports();
       await updateGlobal({ currentPotSOL: balLam / LAMPORTS_PER_SOL });
     } catch {}
-    await sleep(15000); // every 15s — keeps pot display fresh
+    await sleep(15000);
   }
 }
 
@@ -318,7 +341,6 @@ console.log("  Token  : " + TOKEN_CA);
 log("Gas Reserve : ◎" + GAS_RESERVE_SOL);
 log("Min Buy     : ◎" + MIN_BUY_SOL + " SOL");
 log("Timer       : " + (TIMER_MS/60000) + " min");
-log("Detection   : WebSocket real-time");
 log("────────────────────────────────────────────");
 
 db.doc("lbw_stats/global").get().then(snap => {
@@ -335,7 +357,18 @@ db.doc("lbw_stats/global").get().then(snap => {
 const mintPubkey   = new PublicKey(TOKEN_CA);
 const bondingCurve = deriveBondingCurve(mintPubkey);
 
+// Decide what to watch
+if (RAYDIUM_POOL) {
+  // Token already graduated — watch the PumpSwap pool directly
+  log("Token graduated — watching PumpSwap pool: " + RAYDIUM_POOL);
+  subscribeToAddress(new PublicKey(RAYDIUM_POOL));
+} else {
+  // Token still on bonding curve
+  log("Watching bonding curve: " + bondingCurve.toBase58());
+  subscribeToAddress(bondingCurve);
+  graduationWatcher(bondingCurve);
+}
+
 startAutoClaimFees(connection, creatorKP, log);
 startNewRound();
-subscribeWebSocket(bondingCurve);
 balanceUpdateLoop();

@@ -4,7 +4,7 @@ import { db } from "../firebase";
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 const TOKEN_CA      = "PASTE_TOKEN_CA_HERE";
-const X_URL         = "https://x.com/REPLACE_HANDLE";
+const X_URL         = "https://x.com/REPLACE";
 const TIMER_DEFAULT = 60 * 1000;
 const MIN_BUY_SOL   = 0.1;
 
